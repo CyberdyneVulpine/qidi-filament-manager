@@ -14,6 +14,7 @@ $TextFiles = @(
     "catalog.py",
     "server.py",
     "index.html",
+    "fennec.svg",
     "install.sh",
     "uninstall.sh",
     "README.md",

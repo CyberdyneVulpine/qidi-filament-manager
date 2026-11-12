@@ -29,6 +29,7 @@ import catalog
 
 INDEX = Path(__file__).resolve().parent / "index.html"
 FAVICON = Path(__file__).resolve().parent / "favicon.png"
+FENNEC = Path(__file__).resolve().parent / "fennec.svg"
 MOONRAKER_URL = "http://127.0.0.1:7125/printer/objects/query?print_stats"
 PRINTER_INFO_URL = "http://127.0.0.1:7125/printer/info"
 FIRMWARE_RESTART_URL = "http://127.0.0.1:7125/printer/firmware_restart"
@@ -589,6 +590,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/favicon.ico", "/favicon.png"):
             self.serve_favicon()
             return
+        if path == "/fennec.svg":
+            self.serve_fennec()
+            return
         if path == "/":
             self.serve_index()
             return
@@ -752,6 +756,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def serve_fennec(self):
+        try:
+            payload = FENNEC.read_bytes()
+        except OSError:
+            self.send_json(404, {"error": "not found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "public, max-age=86400")
         self.send_header("X-Content-Type-Options", "nosniff")

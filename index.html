@@ -52,13 +52,39 @@
 
     .appbar-inner {
       display: flex;
-      flex-direction: column;
-      justify-content: center;
+      align-items: center;
+      gap: 0.75rem;
       height: 4rem;
       padding: 0.55rem 0;
     }
 
-    main { padding: 1.25rem 0 6rem; }
+    .appbar-logo {
+      flex: none;
+      width: 2.5rem;
+      height: 2.5rem;
+    }
+
+    /* Hang the logo in the margin so the title lines up with main; needs room beside the 72rem column. */
+    @media (min-width: 79rem) {
+      .appbar-logo { margin-left: -3.25rem; }
+    }
+
+    main { position: relative; z-index: 1; padding: 1.25rem 0 6rem; }
+
+    /* Like Fluidd's .background-logo, tinted with the theme color, but kept whole inside the viewport. */
+    .watermark {
+      pointer-events: none;
+      position: fixed;
+      right: 1.5rem;
+      bottom: 1.5rem;
+      z-index: 0;
+      width: min(40vw, calc((100vh - var(--appbar-height) - 3rem) * 1531 / 1388));
+      aspect-ratio: 1531 / 1388;
+      opacity: 0.08;
+      background-color: var(--accent);
+      -webkit-mask: url(/fennec.svg) center / contain no-repeat;
+      mask: url(/fennec.svg) center / contain no-repeat;
+    }
 
     .kicker {
       margin: 0.1rem 0 0;
@@ -81,7 +107,7 @@
       font-weight: 500;
     }
 
-    .lede, .status, footer, .hint {
+    .lede, footer, .hint {
       color: var(--muted);
     }
 
@@ -146,8 +172,74 @@
     .notice { border-left: 4px solid var(--ok); }
     .error { border-left: 4px solid var(--danger); }
 
-    .panel .status { margin: 0; }
-    .reason { margin: 0.4rem 0 0; color: var(--ink); }
+    .status-badges {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin: 1rem 0;
+    }
+
+    .status-badges:has(> #busy-badge[hidden]) { grid-template-columns: minmax(0, 1fr); }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.9rem;
+      min-width: 0;
+      padding: 0.8rem 1rem;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+
+    .status-badge-busy {
+      background: rgba(255, 82, 82, 0.1);
+      border-color: rgba(255, 82, 82, 0.45);
+    }
+
+    .status-badge-icon {
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 3rem;
+      height: 3rem;
+    }
+
+    .status-badge-busy .status-badge-icon { color: var(--danger); }
+
+    .status-badge-count {
+      color: var(--accent);
+      font-size: 2.25rem;
+      font-weight: 500;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .status-badge-text { min-width: 0; }
+    .status-badge-title { margin: 0; font-weight: 500; }
+
+    .status-badge-detail {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin: 0.15rem 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .status-badge-detail code {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #copy-catalog {
+      flex: none;
+      min-height: 1.75rem;
+      padding: 0 0.5rem;
+      font-size: 0.8rem;
+    }
 
     .fab-apply {
       position: fixed;
@@ -343,6 +435,7 @@
 
     @media (max-width: 700px) {
       .form { grid-template-columns: 1fr; }
+      .status-badges { grid-template-columns: minmax(0, 1fr); }
     }
 
     @media (max-width: 960px) {
@@ -353,12 +446,15 @@
 <body>
   <header class="appbar">
     <div class="appbar-inner">
-      <h1>Filament Manager</h1>
-      <p class="kicker">QIDI touchscreen catalog</p>
+      <img class="appbar-logo" src="/favicon.png" alt="" width="40" height="40">
+      <div>
+        <h1>Filament Manager</h1>
+        <p class="kicker">QIDI touchscreen catalog</p>
+      </div>
     </div>
   </header>
   <main>
-    <p class="lede">Add, edit, and remove materials in the load menu. New rows are copies of a material already on this printer. The touchscreen reads the catalog when it starts.</p>
+    <p class="lede">Edit the materials that appear in the QIDI touchscreen load menu.</p>
     <noscript><p class="error">This page needs JavaScript to edit the catalog.</p></noscript>
 
     <div id="missing" class="panel" hidden>
@@ -368,15 +464,35 @@
     <div id="notice" class="notice" role="status" hidden></div>
 
     <div id="workspace" hidden>
-      <section class="panel" aria-label="Touchscreen">
+      <section aria-label="Touchscreen">
         <div id="banner" class="banner" hidden></div>
-        <p id="status" class="status"></p>
-        <p id="action-reason" class="reason" hidden></p>
+        <div class="status-badges">
+          <div id="busy-badge" class="status-badge status-badge-busy" role="status" hidden>
+            <span class="status-badge-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="40" height="40"><path d="M15.73 3H8.27L3 8.27v7.46L8.27 21h7.46L21 15.73V8.27zM17 15.74 15.74 17 12 13.26 8.26 17 7 15.74 10.74 12 7 8.26 8.26 7 12 10.74 15.74 7 17 8.26 13.26 12z" fill="currentColor"/></svg>
+            </span>
+            <div class="status-badge-text">
+              <p id="busy-title" class="status-badge-title"></p>
+              <p id="busy-detail" class="status-badge-detail"></p>
+            </div>
+          </div>
+          <div class="status-badge">
+            <span id="catalog-count" class="status-badge-icon status-badge-count"></span>
+            <div class="status-badge-text">
+              <p id="catalog-title" class="status-badge-title"></p>
+              <p class="status-badge-detail">
+                <span>From</span>
+                <code id="catalog-path"></code>
+                <button id="copy-catalog" type="button" class="small" title="Copy the full path">Copy</button>
+              </p>
+            </div>
+          </div>
+        </div>
       </section>
 
       <div class="toolbar">
         <label class="grow">Search
-          <input id="search" type="search" placeholder="Name, type, or id" autocomplete="off">
+          <input id="search" type="search" placeholder="Name, type, or ID" autocomplete="off">
         </label>
         <label>Vendor
           <select id="vendor-filter"></select>
@@ -386,13 +502,13 @@
 
       <div class="table-wrap">
         <table>
-          <caption>Rows marked Added here were not in the file the first time Filament Manager ran on this printer. Rows marked In use are selected on a slot. Choose another material for that slot on the touchscreen before removing one or changing its id.</caption>
+          <caption>Added here = new since this app first ran. In use = loaded on a slot; pick another material on the touchscreen before removing it or changing its id.</caption>
           <thead>
             <tr>
+              <th>Vendor</th>
               <th>Name</th>
               <th>Type</th>
-              <th>Id</th>
-              <th>Vendor</th>
+              <th>ID</th>
               <th>Nozzle</th>
               <th>Chamber</th>
               <th></th>
@@ -416,8 +532,8 @@
         <label>Type
           <input id="add-type" required>
         </label>
-        <label>Id
-          <input id="add-id" required placeholder="Unused id">
+        <label>ID
+          <input id="add-id" required placeholder="Unused ID">
         </label>
         <label>Nozzle minimum and maximum (°C)
           <span class="pair">
@@ -445,6 +561,8 @@
       <p>This page is open on the local network, with no extra login, the same way Fluidd and Moonraker are on a stock QIDI. Do not forward the port to the internet.</p>
     </footer>
   </main>
+
+  <div class="watermark" aria-hidden="true"></div>
 
   <div id="fab-apply" class="fab-apply" hidden>
     <div id="apply-menu" class="apply-menu" role="menu" aria-labelledby="apply-menu-toggle" hidden>
@@ -482,7 +600,7 @@
       <label>Type
         <input id="edit-type" required>
       </label>
-      <label>Id
+      <label>ID
         <input id="edit-id" required>
       </label>
       <p id="edit-preview" class="hint wide"></p>
@@ -515,8 +633,13 @@
     const applyMenu = document.getElementById("apply-menu");
     const restartButton = document.getElementById("restart");
     const rebootButton = document.getElementById("reboot");
-    const actionReason = document.getElementById("action-reason");
-    const statusLine = document.getElementById("status");
+    const busyBadge = document.getElementById("busy-badge");
+    const busyTitle = document.getElementById("busy-title");
+    const busyDetail = document.getElementById("busy-detail");
+    const catalogCount = document.getElementById("catalog-count");
+    const catalogTitle = document.getElementById("catalog-title");
+    const catalogPath = document.getElementById("catalog-path");
+    const copyCatalogButton = document.getElementById("copy-catalog");
     const searchInput = document.getElementById("search");
     const vendorFilter = document.getElementById("vendor-filter");
     const rowsBody = document.getElementById("rows");
@@ -685,12 +808,16 @@
       missing.hidden = true;
       workspace.hidden = false;
       fab.hidden = false;
-      statusLine.replaceChildren();
-      const count = status.count == null ? "The catalog" : status.count + (status.count === 1 ? " material in " : " materials in ");
-      statusLine.append(document.createTextNode(count));
-      const code = document.createElement("code");
-      code.textContent = status.catalog;
-      statusLine.append(code);
+      if (status.count == null) {
+        catalogCount.textContent = "?";
+        catalogTitle.textContent = "Loaded the catalog";
+      } else {
+        catalogCount.textContent = String(status.count);
+        catalogTitle.textContent = "Loaded " + status.count + (status.count === 1 ? " Material" : " Materials");
+      }
+      const tail = String(status.catalog || "").split(/[\\/]/).slice(-2).join("/");
+      catalogPath.textContent = ".../" + tail;
+      catalogPath.title = status.catalog || "";
       if (status.klippy_state === "shutdown" || status.klippy_state === "error") {
         banner.hidden = false;
         banner.textContent = "Klipper is shut down. If a material was just selected or loaded on the touchscreen, Apply Changes reloads the catalog and restarts Klipper and the screen.";
@@ -714,9 +841,43 @@
       rebootButton.disabled = busy || !status.reboot_allowed;
       rebootButton.title = status.reboot_block || "Reboots the whole printer.";
       menuToggle.disabled = busy;
-      actionReason.hidden = !status.apply_block;
-      actionReason.textContent = status.apply_block || "";
+      const block = status.apply_block || "";
+      const split = block.indexOf(". ");
+      busyBadge.hidden = !block;
+      busyTitle.textContent = split === -1 ? block : block.slice(0, split + 1);
+      busyDetail.textContent = split === -1 ? "" : block.slice(split + 2);
+      busyDetail.hidden = split === -1;
     }
+
+    // navigator.clipboard only exists on HTTPS or localhost; the printer serves plain HTTP.
+    async function copyText(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.append(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      if (!ok) throw new Error("copy failed");
+    }
+
+    copyCatalogButton.addEventListener("click", async () => {
+      const path = lastStatus && lastStatus.catalog;
+      if (!path) return;
+      try {
+        await copyText(path);
+        copyCatalogButton.textContent = "Copied";
+        setTimeout(() => { copyCatalogButton.textContent = "Copy"; }, 1500);
+      } catch (err) {
+        showNotice(path);
+      }
+    });
 
     function setMenuOpen(open) {
       applyMenu.hidden = !open;
@@ -751,7 +912,10 @@
       for (const row of visible) {
         const tr = document.createElement("tr");
         const nameCell = document.createElement("td");
-        nameCell.textContent = row.name;
+        const vendorPrefix = row.vendor ? row.vendor + " " : "";
+        nameCell.textContent = vendorPrefix && row.name.indexOf(vendorPrefix) === 0
+          ? row.name.slice(vendorPrefix.length)
+          : row.name;
         if (row.added_here) {
           const badge = document.createElement("span");
           badge.className = "badge";
@@ -767,10 +931,10 @@
           nameCell.append(badge);
         }
         const cells = [
+          textCell(row.vendor),
           nameCell,
           textCell(row.type),
           textCell(row.id),
-          textCell(row.vendor),
           textCell(temperature(row.nozzle_min, row.nozzle_max, " °C")),
           textCell(row.chamber === "" ? "—" : row.chamber + " °C")
         ];

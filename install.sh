@@ -19,6 +19,7 @@ FILES=(
   server.py
   index.html
   favicon.png
+  fennec.svg
   install.sh
   uninstall.sh
   README.md
