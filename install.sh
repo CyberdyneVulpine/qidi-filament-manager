@@ -18,6 +18,7 @@ FILES=(
   catalog.py
   server.py
   index.html
+  favicon.png
   install.sh
   uninstall.sh
   README.md

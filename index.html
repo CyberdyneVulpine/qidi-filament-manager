@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Filament manager</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <title>Filament Manager</title>
   <style>
     /* Fluidd's default dark theme: src/plugins/vuetify.ts and src/scss/variables.scss. */
     :root {
@@ -20,6 +21,7 @@
       --hover: #353539;
       --ok: #4caf50;
       --danger: #ff5252;
+      --appbar-height: calc(4rem + 1px); /* .appbar-inner height plus the appbar's bottom border */
     }
 
     * { box-sizing: border-box; }
@@ -52,11 +54,11 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
-      min-height: 4rem;
+      height: 4rem;
       padding: 0.55rem 0;
     }
 
-    main { padding: 1.25rem 0 4rem; }
+    main { padding: 1.25rem 0 6rem; }
 
     .kicker {
       margin: 0.1rem 0 0;
@@ -83,7 +85,7 @@
       color: var(--muted);
     }
 
-    .lede { margin: 0.8rem 0 0; font-size: 1.05rem; max-width: 42rem; }
+    .lede { margin: 0.8rem 0 0; font-size: 1.05rem; }
 
     a { color: var(--accent); }
 
@@ -144,14 +146,63 @@
     .notice { border-left: 4px solid var(--ok); }
     .error { border-left: 4px solid var(--danger); }
 
-    .screen-actions {
+    .panel .status { margin: 0; }
+    .reason { margin: 0.4rem 0 0; color: var(--ink); }
+
+    .fab-apply {
+      position: fixed;
+      right: 1.25rem;
+      bottom: 1.25rem;
+      z-index: 5;
       display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem 1rem;
-      align-items: center;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.5rem;
     }
 
-    .reason { margin: 0.4rem 0 0; color: var(--muted); }
+    .split-btn {
+      display: flex;
+      border-radius: 4px;
+      box-shadow: 0 3px 5px rgba(0, 0, 0, 0.3), 0 6px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .split-btn button { min-height: 2.75rem; }
+    #apply { border-radius: 4px 0 0 4px; padding: 0 1.25rem; }
+
+    #apply-menu-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 0.6rem;
+      border-radius: 0 4px 4px 0;
+      border-left: 1px solid rgba(0, 0, 0, 0.25);
+    }
+
+    #apply-menu-toggle svg { transition: transform 0.15s ease; }
+    #apply-menu-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+    .apply-menu {
+      display: flex;
+      flex-direction: column;
+      min-width: 100%;
+      padding: 0.3rem 0;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      box-shadow: 0 3px 5px rgba(0, 0, 0, 0.3), 0 6px 10px rgba(0, 0, 0, 0.2);
+    }
+
+    .apply-menu button {
+      background: transparent;
+      color: var(--ink);
+      border-radius: 0;
+      text-align: left;
+      font-weight: 400;
+      white-space: nowrap;
+    }
+
+    .apply-menu button:hover:not(:disabled) { background: var(--hover); filter: none; }
+    .apply-menu button.danger { color: #ff8a80; }
 
     .toolbar {
       display: flex;
@@ -184,8 +235,9 @@
     .grow { flex: 1 1 16rem; }
     .grow input { width: 100%; }
 
+    /* No overflow here on wide screens: any overflow value makes this the
+       scroll container and stops the header row sticking to the viewport. */
     .table-wrap {
-      overflow-x: auto;
       background: var(--card);
       border: 1px solid var(--line);
       border-radius: 4px;
@@ -223,6 +275,15 @@
       letter-spacing: 0.02em;
       background: var(--card-heading);
     }
+
+    thead th {
+      position: sticky;
+      top: var(--appbar-height);
+      z-index: 2;
+    }
+
+    thead th:first-child { border-top-left-radius: 4px; }
+    thead th:last-child { border-top-right-radius: 4px; }
     td.actions { text-align: right; }
     button.small {
       min-height: 1.75rem;
@@ -283,12 +344,16 @@
     @media (max-width: 700px) {
       .form { grid-template-columns: 1fr; }
     }
+
+    @media (max-width: 960px) {
+      .table-wrap { overflow-x: auto; }
+    }
   </style>
 </head>
 <body>
   <header class="appbar">
     <div class="appbar-inner">
-      <h1>Filament manager</h1>
+      <h1>Filament Manager</h1>
       <p class="kicker">QIDI touchscreen catalog</p>
     </div>
   </header>
@@ -305,16 +370,8 @@
     <div id="workspace" hidden>
       <section class="panel" aria-label="Touchscreen">
         <div id="banner" class="banner" hidden></div>
-        <div class="screen-actions">
-          <button id="apply" type="button">Apply changes</button>
-          <button id="restart" type="button" class="secondary">Restart touchscreen</button>
-          <button id="reboot" type="button" class="secondary danger">Reboot printer</button>
-          <p id="status" class="status"></p>
-        </div>
-        <p id="apply-reason" class="reason" hidden></p>
-        <p id="restart-reason" class="reason" hidden></p>
-        <p id="reboot-reason" class="reason" hidden></p>
-        <p class="hint">Apply changes restarts Klipper's firmware, then the touchscreen, so both read the catalog again. Use it after any add, edit, removal, or restore. Klipper keeps its own copy of the list, and selecting a material it does not know shuts it down. Restart touchscreen only reloads the screen, and is blocked while Klipper has an older copy. Reboot printer restarts the whole machine.</p>
+        <p id="status" class="status"></p>
+        <p id="action-reason" class="reason" hidden></p>
       </section>
 
       <div class="toolbar">
@@ -329,7 +386,7 @@
 
       <div class="table-wrap">
         <table>
-          <caption>Rows marked Added here were not in the file the first time this manager ran on this printer. Rows marked In use are selected on a slot. Choose another material for that slot on the touchscreen before removing one or changing its id.</caption>
+          <caption>Rows marked Added here were not in the file the first time Filament Manager ran on this printer. Rows marked In use are selected on a slot. Choose another material for that slot on the touchscreen before removing one or changing its id.</caption>
           <thead>
             <tr>
               <th>Name</th>
@@ -384,9 +441,23 @@
     </div>
 
     <footer>
+      <p>After an add, edit, removal, or restore, use Apply Changes so Klipper reloads its catalog. Selecting a material it does not know shuts Klipper down.</p>
       <p>This page is open on the local network, with no extra login, the same way Fluidd and Moonraker are on a stock QIDI. Do not forward the port to the internet.</p>
     </footer>
   </main>
+
+  <div id="fab-apply" class="fab-apply" hidden>
+    <div id="apply-menu" class="apply-menu" role="menu" aria-labelledby="apply-menu-toggle" hidden>
+      <button id="restart" type="button" role="menuitem">Restart touchscreen</button>
+      <button id="reboot" type="button" role="menuitem" class="danger">Reboot printer</button>
+    </div>
+    <div class="split-btn">
+      <button id="apply" type="button">Apply Changes</button>
+      <button id="apply-menu-toggle" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="apply-menu" aria-label="More actions">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 14l5-5 5 5z" fill="currentColor"/></svg>
+      </button>
+    </div>
+  </div>
 
   <dialog id="confirm-dialog" aria-labelledby="confirm-title">
     <h2 id="confirm-title">Confirm</h2>
@@ -438,12 +509,13 @@
     const noticeBox = document.getElementById("notice");
     const workspace = document.getElementById("workspace");
     const banner = document.getElementById("banner");
+    const fab = document.getElementById("fab-apply");
     const applyButton = document.getElementById("apply");
-    const applyReason = document.getElementById("apply-reason");
+    const menuToggle = document.getElementById("apply-menu-toggle");
+    const applyMenu = document.getElementById("apply-menu");
     const restartButton = document.getElementById("restart");
-    const restartReason = document.getElementById("restart-reason");
     const rebootButton = document.getElementById("reboot");
-    const rebootReason = document.getElementById("reboot-reason");
+    const actionReason = document.getElementById("action-reason");
     const statusLine = document.getElementById("status");
     const searchInput = document.getElementById("search");
     const vendorFilter = document.getElementById("vendor-filter");
@@ -486,7 +558,7 @@
       try {
         response = await fetch(path, options);
       } catch (err) {
-        throw new Error("Could not reach the filament manager.");
+        throw new Error("Could not reach Filament Manager.");
       }
       const text = await response.text();
       let body = null;
@@ -607,10 +679,12 @@
         missing.hidden = false;
         missingText.textContent = status.message;
         workspace.hidden = true;
+        fab.hidden = true;
         return;
       }
       missing.hidden = true;
       workspace.hidden = false;
+      fab.hidden = false;
       statusLine.replaceChildren();
       const count = status.count == null ? "The catalog" : status.count + (status.count === 1 ? " material in " : " materials in ");
       statusLine.append(document.createTextNode(count));
@@ -619,13 +693,13 @@
       statusLine.append(code);
       if (status.klippy_state === "shutdown" || status.klippy_state === "error") {
         banner.hidden = false;
-        banner.textContent = "Klipper is shut down. If a material was just selected or loaded on the touchscreen, Apply changes reloads the catalog and restarts Klipper and the screen.";
+        banner.textContent = "Klipper is shut down. If a material was just selected or loaded on the touchscreen, Apply Changes reloads the catalog and restarts Klipper and the screen.";
       } else if (status.klipper_stale) {
         banner.hidden = false;
-        banner.textContent = "The catalog has changed since Klipper last read it. Do not select a new or renamed material on the touchscreen until you Apply changes. Klipper shuts down when it is sent a material it does not know.";
+        banner.textContent = "The catalog has changed since Klipper last read it. Do not select a new or renamed material on the touchscreen until you Apply Changes. Klipper shuts down when it is sent a material it does not know.";
       } else if (status.stale) {
         banner.hidden = false;
-        banner.textContent = "The catalog has changed since the touchscreen started. Apply changes, or Restart touchscreen, to show it on the screen.";
+        banner.textContent = "The catalog has changed since the touchscreen started. Apply Changes, or Restart touchscreen from its menu, to show it on the screen.";
       } else if (status.client_unit && status.client_active === false) {
         banner.hidden = false;
         banner.textContent = "The touchscreen client is not running. Klipper is left alone.";
@@ -634,17 +708,19 @@
         banner.textContent = "";
       }
       applyButton.disabled = busy || !status.apply_allowed;
-      applyButton.title = status.apply_block || "Restart Klipper's firmware, then the touchscreen, so both read the catalog.";
-      applyReason.hidden = !status.apply_block;
-      applyReason.textContent = status.apply_block || "";
+      applyButton.title = status.apply_block || "Restarts Klipper, then the touchscreen, so both reload the catalog.";
       restartButton.disabled = busy || !status.restart_allowed;
-      restartButton.title = status.restart_block || "Restart the touchscreen client. Klipper keeps running.";
-      restartReason.hidden = !status.restart_block;
-      restartReason.textContent = status.restart_block || "";
+      restartButton.title = status.restart_block || "Reloads the touchscreen only. Blocked while Klipper has an older catalog.";
       rebootButton.disabled = busy || !status.reboot_allowed;
-      rebootButton.title = status.reboot_block || "Reboot the printer. Klipper restarts too.";
-      rebootReason.hidden = !status.reboot_block;
-      rebootReason.textContent = status.reboot_block || "";
+      rebootButton.title = status.reboot_block || "Reboots the whole printer.";
+      menuToggle.disabled = busy;
+      actionReason.hidden = !status.apply_block;
+      actionReason.textContent = status.apply_block || "";
+    }
+
+    function setMenuOpen(open) {
+      applyMenu.hidden = !open;
+      menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
     }
 
     function matches(row) {
@@ -1016,7 +1092,23 @@
     }
     refreshPreview("add");
 
+    menuToggle.addEventListener("click", function () {
+      setMenuOpen(applyMenu.hidden);
+    });
+
+    document.addEventListener("click", function (event) {
+      if (!applyMenu.hidden && !fab.contains(event.target)) setMenuOpen(false);
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !applyMenu.hidden) {
+        setMenuOpen(false);
+        menuToggle.focus();
+      }
+    });
+
     rebootButton.addEventListener("click", async function () {
+      setMenuOpen(false);
       if (busy || rebootButton.disabled) return;
       const confirmed = await ask(
         "Reboot the printer?",
@@ -1039,9 +1131,10 @@
     });
 
     applyButton.addEventListener("click", async function () {
+      setMenuOpen(false);
       if (busy || applyButton.disabled) return;
       const confirmed = await ask(
-        "Apply changes?",
+        "Apply Changes?",
         "Klipper's firmware restarts, then the touchscreen. Heaters turn off and the screen goes blank for about half a minute.",
         "Apply"
       );
@@ -1063,6 +1156,7 @@
     });
 
     restartButton.addEventListener("click", async function () {
+      setMenuOpen(false);
       if (busy || restartButton.disabled) return;
       busy = true;
       restartButton.disabled = true;

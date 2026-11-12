@@ -427,14 +427,14 @@ class ServerTests(unittest.TestCase):
         self.assertIsNone(server.read_applied(state_dir, None))
 
     def test_idle_and_apply_rules(self):
-        self.assertIsNone(server.idle_block("standby", None, "Restart"))
-        self.assertIsNone(server.idle_block("complete", None, "Restart"))
-        self.assertIn("printing", server.idle_block("printing", None, "Restart"))
-        self.assertIn("paused", server.idle_block("paused", None, "Reboot"))
-        self.assertEqual(server.idle_block(None, "no moonraker", "Restart"), "no moonraker")
+        self.assertIsNone(server.idle_block("standby", None))
+        self.assertIsNone(server.idle_block("complete", None))
+        self.assertEqual(server.idle_block("printing", None), server.PRINTER_BUSY)
+        self.assertEqual(server.idle_block("paused", None), server.PRINTER_BUSY)
+        self.assertEqual(server.idle_block(None, "no moonraker"), "no moonraker")
         self.assertIsNone(server.apply_block("printing", None, "shutdown"))
         self.assertIsNone(server.apply_block(None, "no print state", "error"))
-        self.assertIn("printing", server.apply_block("printing", None, "ready"))
+        self.assertEqual(server.apply_block("printing", None, "ready"), server.PRINTER_BUSY)
 
     def test_wait_ignores_the_state_from_before_the_restart(self):
         def run(states):
@@ -515,7 +515,7 @@ class ServerTests(unittest.TestCase):
         }
         with self.assertRaises(server.ActionError) as busy:
             server.apply_changes(layout, wait=lambda url: ("ready", ""), **urls)
-        self.assertIn("printing", str(busy.exception))
+        self.assertEqual(str(busy.exception), server.PRINTER_BUSY)
         self.assertEqual(calls, [])
 
         base, calls = self.fake_moonraker("shutdown", "error")
@@ -574,9 +574,9 @@ class ServerTests(unittest.TestCase):
 
         status, page = call("/")
         self.assertEqual(status, 200)
-        self.assertIn(b"Filament manager", page)
+        self.assertIn(b"Filament Manager", page)
         self.assertIn(b"Reboot printer", page)
-        self.assertIn(b"Apply changes", page)
+        self.assertIn(b"Apply Changes", page)
         self.assertIn(b"The whole printer reboots, including Klipper.", page)
         self.assertIn(b"add-material", page)
 

@@ -1,4 +1,4 @@
-# Filament manager
+# Filament Manager
 
 A small page for the QIDI touchscreen filament list. It runs on the printer. From another computer on the same network, open `http://<printer-address>:8091/`.
 
@@ -19,11 +19,10 @@ Python 3.9's standard library is enough. Nothing is installed with pip.
 - Edits those same fields on an existing row.
 - Removes a row after a confirmation that names the material. The last row cannot be removed. A row that a slot is using, according to `filament_slotN` in `printer_data/config/saved_variables.cfg`, is marked In use. It cannot be removed or given a different id, and a backup without its id cannot be restored. Loading a slot whose id is not in the catalog shuts Klipper down.
 - Saves a backup on every change, and when you use Back up now. One copy sits beside the catalog. The other goes in that user's `printer_data/config`, which Fluidd can already show. The page lists those backups and can download or restore one.
-- Apply changes sends `FIRMWARE_RESTART` through Moonraker, waits for Klipper to report `ready`, then restarts `qidi-client.service`. It takes about 20 seconds. Klipper keeps its own copy of the catalog, read only when it starts. Selecting a material that copy does not have shuts Klipper down. Use Apply after every add, edit, removal, or restore. [touchscreen-klipper-materials.md](https://github.com/CaelanBorowiec/Qidi-Print-Configs/blob/main/docs/touchscreen-klipper-materials/touchscreen-klipper-materials.md) has the details.
+- Apply Changes stays in the bottom-right corner while you scroll. It sends `FIRMWARE_RESTART` through Moonraker, waits for Klipper to report `ready`, then restarts `qidi-client.service`. It takes about 20 seconds. Klipper keeps its own copy of the catalog, read only when it starts. Selecting a material that copy does not have shuts Klipper down. Use Apply after every add, edit, removal, or restore. [touchscreen-klipper-materials.md](https://github.com/CaelanBorowiec/Qidi-Print-Configs/blob/main/docs/touchscreen-klipper-materials/touchscreen-klipper-materials.md) has the details.
 - Shows a banner when the catalog has changed since Klipper or the touchscreen last read it. Klipper counts as up to date after its service starts or after an Apply from this page in the current boot. A `FIRMWARE_RESTART` sent from somewhere else is not seen, so the banner can stay up until the next Apply.
-- Restart touchscreen runs `systemctl restart qidi-client.service` only. It is refused while Klipper has an older catalog. It is still useful for clearing a stuck popup.
-- Reboots the printer with `systemctl reboot` from a separate button. The page says the printer is rebooting, then the reboot runs about two seconds later.
-- Restart, Apply, and Reboot wait while Moonraker on `127.0.0.1:7125` reports a print as running or paused. `print_stats.state` must be `standby`, `complete`, `cancelled`, or `error`. Apply is also allowed whenever Klipper is shut down, so it can recover from the crash described above.
+- The arrow on the edge of Apply Changes opens two more actions. Restart touchscreen runs `systemctl restart qidi-client.service` only. It is refused while Klipper has an older catalog, and is still useful for clearing a stuck popup. Reboot printer runs `systemctl reboot`. The page says the printer is rebooting, then the reboot runs about two seconds later.
+- All three actions wait while Moonraker on `127.0.0.1:7125` reports a print as running or paused, and the page shows a single "printer is busy" message. `print_stats.state` must be `standby`, `complete`, `cancelled`, or `error`. Apply is also allowed whenever Klipper is shut down, so it can recover from the crash described above.
 
 The first time the app reads the catalog, it records the filament ids already in the file under `filament-manager/state/` on that printer. Ids that show up later are marked Added here. That record stays on the printer.
 
@@ -91,9 +90,9 @@ Restarting the screen needs root. When `qidi-client.service` is installed, `inst
 /bin/systemctl restart qidi-client.service
 ```
 
-The page will not restart the client while a print is active. If the unit is not on the printer, the app still runs and the restart button stays off.
+The page will not restart the client while a print is active. If the unit is not on the printer, the app still runs and Restart touchscreen stays off in the Apply Changes menu.
 
-Apply changes needs no extra rule for Klipper. Moonraker's `/printer/firmware_restart` takes the request without a login on the local network. Before restarting Klipper, Apply checks that the touchscreen rule is in place, so it does not leave Klipper restarted with the screen still on the old list.
+Apply Changes needs no extra rule for Klipper. Moonraker's `/printer/firmware_restart` takes the request without a login on the local network. Before restarting Klipper, Apply checks that the touchscreen rule is in place, so it does not leave Klipper restarted with the screen still on the old list.
 
 ## Printer reboot
 
@@ -103,13 +102,13 @@ Rebooting needs root. `install.sh` also allows this one command:
 /bin/systemctl reboot
 ```
 
-That rule is installed even when `qidi-client.service` is missing. A printer that already has the app needs `install.sh` again before the button is permitted. This is a Linux reboot. Apply changes is enough for catalog edits.
+That rule is installed even when `qidi-client.service` is missing. A printer that already has the app needs `install.sh` again before Reboot printer is permitted. This is a Linux reboot. Apply Changes is enough for catalog edits.
 
 ## Firmware updates
 
 A firmware package can replace `QIDI_Client` and can remove a unit under `/etc`. This app lives outside `QIDI_Client`. If an update removes the service, run `install.sh` again.
 
-The catalog file itself is inside `QIDI_Client`, so an update can replace `filament-0.4.json`. Backups in `printer_data/config` are outside that tree. Restore one from the page, then Apply changes.
+The catalog file itself is inside `QIDI_Client`, so an update can replace `filament-0.4.json`. Backups in `printer_data/config` are outside that tree. Restore one from the page, then Apply Changes.
 
 ## Uninstall
 

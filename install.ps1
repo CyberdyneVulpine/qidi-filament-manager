@@ -10,7 +10,7 @@
 $ErrorActionPreference = "Stop"
 
 $Source = $PSScriptRoot
-$Files = @(
+$TextFiles = @(
     "catalog.py",
     "server.py",
     "index.html",
@@ -19,6 +19,10 @@ $Files = @(
     "README.md",
     "filament-manager.service"
 )
+$BinaryFiles = @(
+    "favicon.png"
+)
+$Files = $TextFiles + $BinaryFiles
 
 function Show-Usage {
     Write-Host "Usage: powershell -ExecutionPolicy Bypass -File install.ps1 user@printer"
@@ -57,7 +61,7 @@ $Staging = Join-Path ([System.IO.Path]::GetTempPath()) ("filament-manager-" + [g
 New-Item -ItemType Directory -Path $Staging | Out-Null
 try {
     $utf8 = New-Object System.Text.UTF8Encoding $false
-    foreach ($file in $Files) {
+    foreach ($file in $TextFiles) {
         $path = Join-Path $Source $file
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             Write-Host "Missing $path" -ForegroundColor Red
@@ -65,6 +69,14 @@ try {
         }
         $text = [System.IO.File]::ReadAllText($path, $utf8).Replace("`r`n", "`n")
         [System.IO.File]::WriteAllText((Join-Path $Staging $file), $text, $utf8)
+    }
+    foreach ($file in $BinaryFiles) {
+        $path = Join-Path $Source $file
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Write-Host "Missing $path" -ForegroundColor Red
+            exit 1
+        }
+        Copy-Item -LiteralPath $path -Destination (Join-Path $Staging $file) -Force
     }
 
     Write-Host "Connecting to $Target."

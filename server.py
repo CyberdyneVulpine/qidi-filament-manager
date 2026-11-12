@@ -28,6 +28,7 @@ import catalog
 
 
 INDEX = Path(__file__).resolve().parent / "index.html"
+FAVICON = Path(__file__).resolve().parent / "favicon.png"
 MOONRAKER_URL = "http://127.0.0.1:7125/printer/objects/query?print_stats"
 PRINTER_INFO_URL = "http://127.0.0.1:7125/printer/info"
 FIRMWARE_RESTART_URL = "http://127.0.0.1:7125/printer/firmware_restart"
@@ -45,8 +46,9 @@ READY_TIMEOUT = 90.0
 MAX_BODY = 1_000_000
 NO_PRINT_STATE = "Moonraker on 127.0.0.1:7125 did not report print_stats.state."
 NO_KLIPPY_STATE = "Moonraker on 127.0.0.1:7125 did not report Klipper's state."
+PRINTER_BUSY = "The printer is busy. Make sure it is idle before applying changes."
 STALE_RESTART = (
-    "Klipper has not loaded the latest catalog. Use Apply changes so Klipper and the touchscreen "
+    "Klipper has not loaded the latest catalog. Use Apply Changes so Klipper and the touchscreen "
     "reload together. Selecting a new or renamed material after a touchscreen-only restart shuts Klipper down."
 )
 
@@ -267,14 +269,11 @@ def read_klippy_state(url=PRINTER_INFO_URL):
     return state, message.strip() if isinstance(message, str) else ""
 
 
-def idle_block(print_state, print_error, action):
+def idle_block(print_state, print_error):
     if print_state is None:
         return print_error or NO_PRINT_STATE
     if print_state not in IDLE_PRINT_STATES:
-        return (
-            f"The printer is busy (print_stats.state is {print_state}). "
-            f"{action} waits until no print is running or paused."
-        )
+        return PRINTER_BUSY
     return None
 
 
@@ -282,7 +281,7 @@ def apply_block(print_state, print_error, klippy_state):
     """Apply is allowed when idle, and when Klipper has already shut down."""
     if klippy_state in STOPPED_KLIPPY_STATES:
         return None
-    return idle_block(print_state, print_error, "Apply")
+    return idle_block(print_state, print_error)
 
 
 def _sudo_permitted(command):
@@ -310,7 +309,7 @@ def restart_touchscreen(layout=None):
         raise ActionError("This printer has no qidi-client.service to restart.")
     if not Path("/bin/systemctl").exists():
         raise ActionError("This printer has no /bin/systemctl, so the touchscreen was not restarted.")
-    block = idle_block(read_print_state(), None, "Restart")
+    block = idle_block(read_print_state(), None)
     if block:
         raise ActionError(block)
     if _klipper_stale(layout):
@@ -430,7 +429,7 @@ def _run_reboot():
 def prepare_reboot():
     if not Path("/bin/systemctl").exists():
         raise ActionError("This printer has no /bin/systemctl, so it was not rebooted.")
-    block = idle_block(read_print_state(), None, "Reboot")
+    block = idle_block(read_print_state(), None)
     if block:
         raise ActionError(block)
     if not _sudo_permitted(REBOOT_COMMAND):
@@ -476,13 +475,13 @@ def build_status(layout, homes):
     if not client["unit_installed"]:
         restart_block = "This printer has no qidi-client.service to restart."
     else:
-        restart_block = idle_block(print_state, print_error, "Restart")
+        restart_block = idle_block(print_state, print_error)
         if restart_block is None and klipper_stale:
             restart_block = STALE_RESTART
     if not systemctl:
         reboot_block = "This printer has no /bin/systemctl, so it cannot be rebooted from this page."
     else:
-        reboot_block = idle_block(print_state, print_error, "Reboot")
+        reboot_block = idle_block(print_state, print_error)
     if klippy_state is None:
         apply_reason = NO_KLIPPY_STATE
     else:
@@ -587,11 +586,8 @@ class Handler(BaseHTTPRequestHandler):
     def route_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/favicon.ico":
-            self.send_response(204)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+        if path in ("/favicon.ico", "/favicon.png"):
+            self.serve_favicon()
             return
         if path == "/":
             self.serve_index()
@@ -745,6 +741,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def serve_favicon(self):
+        try:
+            payload = FAVICON.read_bytes()
+        except OSError:
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def read_json(self):
         length_header = self.headers.get("Content-Length")
         if length_header is None:
@@ -818,7 +831,7 @@ def main():
         except OSError as exc:
             print(f"could not listen on port {port}: {exc}", file=sys.stderr)
             return 1
-    print(f"Filament manager listening on port {port}", flush=True)
+    print(f"Filament Manager listening on port {port}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
