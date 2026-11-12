@@ -37,6 +37,14 @@ bash install.sh qidi@printer
 
 Use the account you normally use for SSH. It does not have to be the account that owns the catalog.
 
+From Windows 10 or 11, use PowerShell instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 qidi@printer
+```
+
+It uses the `ssh` and `scp` that come with Windows. If they are missing, turn on OpenSSH Client under Settings > Apps > Optional features. The script copies the files with Unix line endings, then runs `install.sh` on the printer, so the steps and password prompts are the same. `-ExecutionPolicy Bypass` applies only to that one run.
+
 If that password has never been changed, the factory login is:
 
 - Plus 5 and Max 4: user `qidi`, password `qiditech`
@@ -109,7 +117,7 @@ The catalog file itself is inside `QIDI_Client`, so an update can replace `filam
 bash uninstall.sh qidi@printer
 ```
 
-Or, on the printer, `bash uninstall.sh`. From another computer this asks for the password the same way: once to copy the script, again to connect, then once more for `sudo`. It stops the service, removes the unit, and removes the sudoers rule. It leaves `/home/<owner>/filament-manager` and the catalog file. Delete the app directory yourself if you want the files gone.
+From Windows, `powershell -ExecutionPolicy Bypass -File uninstall.ps1 qidi@printer`. Or, on the printer, `bash uninstall.sh`. From another computer this asks for the password the same way: once to copy the script, again to connect, then once more for `sudo`. It stops the service, removes the unit, and removes the sudoers rule. It leaves `/home/<owner>/filament-manager` and the catalog file. Delete the app directory yourself if you want the files gone.
 
 Service logs:
 
