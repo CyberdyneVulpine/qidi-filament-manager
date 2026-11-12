@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Filament manager</title>
+  <style>
+    /* Fluidd's default dark theme: src/plugins/vuetify.ts and src/scss/variables.scss. */
+    :root {
+      color-scheme: dark;
+      --ink: rgba(255, 255, 255, 0.87);
+      --muted: rgba(255, 255, 255, 0.60);
+      --line: rgba(255, 255, 255, 0.12);
+      --paper: #1e1e20;
+      --card: #262629;
+      --card-heading: #333337;
+      --accent: #2196f3; /* replaced by Fluidd's uiSettings.theme.color when Moonraker has it */
+      --accent-soft: rgba(33, 150, 243, 0.16);
+      --btn: #4a4a4f;
+      --hover: #353539;
+      --ok: #4caf50;
+      --danger: #ff5252;
+    }
+
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Roboto, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      font-size: 1rem;
+      line-height: 1.5;
+    }
+
+    .appbar {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.36);
+    }
+
+    .appbar-inner, main {
+      width: min(72rem, calc(100% - 2rem));
+      margin: 0 auto;
+    }
+
+    .appbar-inner {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      min-height: 4rem;
+      padding: 0.55rem 0;
+    }
+
+    main { padding: 1.25rem 0 4rem; }
+
+    .kicker {
+      margin: 0.1rem 0 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 400;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.25rem;
+      font-weight: 500;
+      letter-spacing: 0.01em;
+      line-height: 1.3;
+    }
+
+    h2 {
+      margin: 1.5rem 0 0.75rem;
+      font-size: 1.125rem;
+      font-weight: 500;
+    }
+
+    .lede, .status, footer, .hint {
+      color: var(--muted);
+    }
+
+    .lede { margin: 0.8rem 0 0; font-size: 1.05rem; max-width: 42rem; }
+
+    a { color: var(--accent); }
+
+    code {
+      font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+      font-size: 0.86em;
+      background: var(--accent-soft);
+      padding: 0.08em 0.35em;
+      border-radius: 0.25em;
+    }
+
+    button, .linkish {
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: 0;
+      border-radius: 4px;
+      padding: 0 1rem;
+      min-height: 2.25rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    button:hover:not(:disabled) { filter: brightness(1.12); }
+
+    button.secondary, button.small {
+      background: var(--btn);
+      color: var(--ink);
+    }
+
+    button.danger {
+      color: #ff8a80;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    button:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .panel, .banner, .error, .notice {
+      margin: 1rem 0;
+      padding: 0.9rem 1rem;
+      background: var(--card);
+      border-radius: 4px;
+      border: 1px solid var(--line);
+    }
+
+    .banner { border-left: 4px solid var(--accent); }
+    .notice { border-left: 4px solid var(--ok); }
+    .error { border-left: 4px solid var(--danger); }
+
+    .screen-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem 1rem;
+      align-items: center;
+    }
+
+    .reason { margin: 0.4rem 0 0; color: var(--muted); }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      align-items: end;
+      margin: 1rem 0;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    input, select {
+      font: inherit;
+      color: var(--ink);
+      background: var(--paper);
+      border: 1px solid rgba(255, 255, 255, 0.24);
+      border-radius: 4px;
+      padding: 0.45rem 0.6rem;
+      min-width: 0;
+    }
+
+    input:hover, select:hover { border-color: rgba(255, 255, 255, 0.45); }
+
+    .grow { flex: 1 1 16rem; }
+    .grow input { width: 100%; }
+
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+
+    caption {
+      caption-side: bottom;
+      padding: 0.7rem 0.8rem 0.85rem;
+      text-align: left;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.35rem 0.75rem;
+      height: 2.5rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    tbody tr:hover td { background: var(--hover); }
+
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.75rem;
+      letter-spacing: 0.02em;
+      background: var(--card-heading);
+    }
+    td.actions { text-align: right; }
+    button.small {
+      min-height: 1.75rem;
+      padding: 0 0.65rem;
+      margin-left: 0.3rem;
+      font-size: 0.8125rem;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-left: 0.45rem;
+      padding: 0.05rem 0.4rem;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      vertical-align: 0.1em;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1rem;
+    }
+
+    .form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem 1rem;
+    }
+
+    .form .wide { grid-column: 1 / -1; }
+    .form input, .form select { width: 100%; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
+    .actions { display: flex; gap: 0.5rem; align-items: center; }
+
+    dialog {
+      width: min(36rem, calc(100% - 2rem));
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1.1rem 1.15rem 1.2rem;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 0 11px 15px rgba(0, 0, 0, 0.2), 0 24px 38px rgba(0, 0, 0, 0.14);
+    }
+
+    dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+    dialog h2 { margin-top: 0; }
+
+    footer {
+      margin-top: 2.5rem;
+      font-size: 0.85rem;
+    }
+
+    @media (max-width: 700px) {
+      .form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="appbar">
+    <div class="appbar-inner">
+      <h1>Filament manager</h1>
+      <p class="kicker">QIDI touchscreen catalog</p>
+    </div>
+  </header>
+  <main>
+    <p class="lede">Add, edit, and remove materials in the load menu. New rows are copies of a material already on this printer. The touchscreen reads the catalog when it starts.</p>
+    <noscript><p class="error">This page needs JavaScript to edit the catalog.</p></noscript>
+
+    <div id="missing" class="panel" hidden>
+      <p id="missing-text">This printer's touchscreen does not use that catalog.</p>
+    </div>
+    <div id="error" class="error" role="alert" hidden></div>
+    <div id="notice" class="notice" role="status" hidden></div>
+
+    <div id="workspace" hidden>
+      <section class="panel" aria-label="Touchscreen">
+        <div id="banner" class="banner" hidden></div>
+        <div class="screen-actions">
+          <button id="apply" type="button">Apply changes</button>
+          <button id="restart" type="button" class="secondary">Restart touchscreen</button>
+          <button id="reboot" type="button" class="secondary danger">Reboot printer</button>
+          <p id="status" class="status"></p>
+        </div>
+        <p id="apply-reason" class="reason" hidden></p>
+        <p id="restart-reason" class="reason" hidden></p>
+        <p id="reboot-reason" class="reason" hidden></p>
+        <p class="hint">Apply changes restarts Klipper's firmware, then the touchscreen, so both read the catalog again. Use it after any add, edit, removal, or restore. Klipper keeps its own copy of the list, and selecting a material it does not know shuts it down. Restart touchscreen only reloads the screen, and is blocked while Klipper has an older copy. Reboot printer restarts the whole machine.</p>
+      </section>
+
+      <div class="toolbar">
+        <label class="grow">Search
+          <input id="search" type="search" placeholder="Name, type, or id" autocomplete="off">
+        </label>
+        <label>Vendor
+          <select id="vendor-filter"></select>
+        </label>
+        <button id="backup" type="button" class="secondary">Back up now</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <caption>Rows marked Added here were not in the file the first time this manager ran on this printer. Rows marked In use are selected on a slot. Choose another material for that slot on the touchscreen before removing one or changing its id.</caption>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Type</th>
+              <th>Id</th>
+              <th>Vendor</th>
+              <th>Nozzle</th>
+              <th>Chamber</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <h2>Add a material</h2>
+      <form id="add-form" class="card form" autocomplete="off">
+        <label class="wide">Copy from
+          <select id="template" required></select>
+        </label>
+        <label>Vendor
+          <input id="add-vendor" list="vendors" required autocomplete="off">
+        </label>
+        <label>Material
+          <input id="add-material" required placeholder="PETG" autocomplete="off">
+        </label>
+        <label>Type
+          <input id="add-type" required>
+        </label>
+        <label>Id
+          <input id="add-id" required placeholder="Unused id">
+        </label>
+        <label>Nozzle minimum and maximum (°C)
+          <span class="pair">
+            <input id="add-nozzle-min" inputmode="numeric" aria-label="Nozzle minimum">
+            <input id="add-nozzle-max" inputmode="numeric" aria-label="Nozzle maximum">
+          </span>
+        </label>
+        <label>Chamber (°C)
+          <input id="add-chamber">
+        </label>
+        <div class="wide actions">
+          <button type="submit">Add material</button>
+        </div>
+        <p id="add-preview" class="hint wide"></p>
+        <p class="hint wide">Leave nozzle and chamber blank to keep the copied temperatures. The id has to be unused on this printer. Type is stored on the row. The load list does not use it.</p>
+      </form>
+      <datalist id="vendors"></datalist>
+
+      <h2>Backups</h2>
+      <div id="backup-list" class="table-wrap"></div>
+    </div>
+
+    <footer>
+      <p>This page is open on the local network, with no extra login, the same way Fluidd and Moonraker are on a stock QIDI. Do not forward the port to the internet.</p>
+    </footer>
+  </main>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <h2 id="confirm-title">Confirm</h2>
+    <p id="confirm-text"></p>
+    <div class="actions">
+      <button type="button" id="confirm-yes">Continue</button>
+      <button type="button" class="secondary" id="confirm-no">Cancel</button>
+    </div>
+  </dialog>
+
+  <dialog id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form" class="form" autocomplete="off">
+      <h2 id="edit-title" class="wide">Edit material</h2>
+      <p id="edit-error" class="error wide" hidden></p>
+      <input id="edit-original" type="hidden">
+      <label>Vendor
+        <input id="edit-vendor" list="vendors" required autocomplete="off">
+      </label>
+      <label>Material
+        <input id="edit-material" required autocomplete="off">
+      </label>
+      <label>Type
+        <input id="edit-type" required>
+      </label>
+      <label>Id
+        <input id="edit-id" required>
+      </label>
+      <p id="edit-preview" class="hint wide"></p>
+      <label>Nozzle minimum and maximum (°C)
+        <span class="pair">
+          <input id="edit-nozzle-min" inputmode="numeric" aria-label="Nozzle minimum">
+          <input id="edit-nozzle-max" inputmode="numeric" aria-label="Nozzle maximum">
+        </span>
+      </label>
+      <label>Chamber (°C)
+        <input id="edit-chamber">
+      </label>
+      <div class="wide actions">
+        <button type="submit">Save</button>
+        <button type="button" class="secondary" id="edit-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const missing = document.getElementById("missing");
+    const missingText = document.getElementById("missing-text");
+    const errorBox = document.getElementById("error");
+    const noticeBox = document.getElementById("notice");
+    const workspace = document.getElementById("workspace");
+    const banner = document.getElementById("banner");
+    const applyButton = document.getElementById("apply");
+    const applyReason = document.getElementById("apply-reason");
+    const restartButton = document.getElementById("restart");
+    const restartReason = document.getElementById("restart-reason");
+    const rebootButton = document.getElementById("reboot");
+    const rebootReason = document.getElementById("reboot-reason");
+    const statusLine = document.getElementById("status");
+    const searchInput = document.getElementById("search");
+    const vendorFilter = document.getElementById("vendor-filter");
+    const rowsBody = document.getElementById("rows");
+    const templateSelect = document.getElementById("template");
+    const vendorList = document.getElementById("vendors");
+    const backupList = document.getElementById("backup-list");
+    const editDialog = document.getElementById("edit-dialog");
+    const editError = document.getElementById("edit-error");
+    const confirmDialog = document.getElementById("confirm-dialog");
+    const confirmTitle = document.getElementById("confirm-title");
+    const confirmText = document.getElementById("confirm-text");
+    const confirmYes = document.getElementById("confirm-yes");
+    const confirmNo = document.getElementById("confirm-no");
+
+    let materials = [];
+    let lastStatus = null;
+    let busy = false;
+    let templatesReady = false;
+
+    function showError(message) {
+      errorBox.hidden = false;
+      errorBox.textContent = message;
+    }
+
+    function showNotice(message) {
+      noticeBox.hidden = false;
+      noticeBox.textContent = message;
+      errorBox.hidden = true;
+    }
+
+    async function api(path, payload) {
+      const options = { headers: { "Accept": "application/json" } };
+      if (payload !== undefined) {
+        options.method = "POST";
+        options.headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(payload);
+      }
+      let response;
+      try {
+        response = await fetch(path, options);
+      } catch (err) {
+        throw new Error("Could not reach the filament manager.");
+      }
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch (err) {
+          throw new Error("The printer sent a response that was not JSON.");
+        }
+      }
+      if (!response.ok) {
+        throw new Error((body && body.error) || "The request failed.");
+      }
+      return body;
+    }
+
+    function nozzlePayload(minInput, maxInput) {
+      const low = minInput.value.trim();
+      const high = maxInput.value.trim();
+      if (low === "" && high === "") {
+        return { nozzle_min: null, nozzle_max: null };
+      }
+      if (low === "" || high === "") {
+        throw new Error("Enter both nozzle temperatures, or leave both blank.");
+      }
+      const nozzleMin = Number(low);
+      const nozzleMax = Number(high);
+      if (!Number.isInteger(nozzleMin) || !Number.isInteger(nozzleMax)) {
+        throw new Error("Nozzle temperatures must be whole numbers.");
+      }
+      return { nozzle_min: nozzleMin, nozzle_max: nozzleMax };
+    }
+
+    function materialFromName(name, vendor) {
+      const trimmedName = (name || "").trim();
+      const trimmedVendor = (vendor || "").trim();
+      const prefixed = trimmedVendor + " ";
+      if (trimmedVendor && trimmedName.indexOf(prefixed) === 0) {
+        return trimmedName.slice(prefixed.length);
+      }
+      const space = trimmedName.indexOf(" ");
+      if (space === -1) return trimmedName;
+      return trimmedName.slice(space + 1);
+    }
+
+    function previewText(vendor, material, originalName) {
+      const savedVendor = vendor.trim();
+      const savedMaterial = material.trim();
+      if (/\s/.test(savedVendor)) {
+        return "Vendor has to be a single word. The load list uses only the first word of the catalog name as the vendor.";
+      }
+      if (!savedVendor || !savedMaterial) {
+        return "Enter a vendor and a material. The catalog name is those two, separated by one space.";
+      }
+      const name = savedVendor + " " + savedMaterial;
+      let text = "In the list: vendor " + savedVendor + ", filament " + savedMaterial + ". After selection: vendor " + savedVendor + ", filament " + name + ".";
+      if (originalName && originalName !== name) {
+        text += " Saving renames this to " + name + ".";
+      }
+      return text;
+    }
+
+    function refreshPreview(prefix) {
+      const original = prefix === "edit" ? document.getElementById("edit-original").value : "";
+      document.getElementById(prefix + "-preview").textContent = previewText(
+        document.getElementById(prefix + "-vendor").value,
+        document.getElementById(prefix + "-material").value,
+        original
+      );
+    }
+
+    function identityPayload(prefix) {
+      const nozzle = nozzlePayload(
+        document.getElementById(prefix + "-nozzle-min"),
+        document.getElementById(prefix + "-nozzle-max")
+      );
+      const vendor = document.getElementById(prefix + "-vendor").value.trim();
+      const material = document.getElementById(prefix + "-material").value.trim();
+      if (/\s/.test(vendor)) {
+        throw new Error("Vendor has to be a single word. The load list uses the first word of the name as the vendor.");
+      }
+      if (!vendor || !material) {
+        throw new Error("Enter a vendor and a material.");
+      }
+      const chamber = document.getElementById(prefix + "-chamber").value.trim();
+      return Object.assign({
+        name: vendor + " " + material,
+        type: document.getElementById(prefix + "-type").value.trim(),
+        id: document.getElementById(prefix + "-id").value.trim(),
+        vendor: vendor,
+        chamber: chamber === "" ? null : chamber
+      }, nozzle);
+    }
+
+    function applyPrimary(color) {
+      if (typeof color !== "string" || !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
+        return;
+      }
+      let hex = color.slice(1);
+      if (hex.length === 3) {
+        hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+      }
+      if (hex.length === 8) {
+        hex = hex.slice(0, 6);
+      }
+      const red = parseInt(hex.slice(0, 2), 16);
+      const green = parseInt(hex.slice(2, 4), 16);
+      const blue = parseInt(hex.slice(4, 6), 16);
+      const root = document.documentElement;
+      root.style.setProperty("--accent", color);
+      root.style.setProperty("--accent-soft", "rgba(" + red + ", " + green + ", " + blue + ", 0.16)");
+    }
+
+    function applyStatus(status) {
+      lastStatus = status;
+      applyPrimary(status.primary);
+      if (!status.found) {
+        missing.hidden = false;
+        missingText.textContent = status.message;
+        workspace.hidden = true;
+        return;
+      }
+      missing.hidden = true;
+      workspace.hidden = false;
+      statusLine.replaceChildren();
+      const count = status.count == null ? "The catalog" : status.count + (status.count === 1 ? " material in " : " materials in ");
+      statusLine.append(document.createTextNode(count));
+      const code = document.createElement("code");
+      code.textContent = status.catalog;
+      statusLine.append(code);
+      if (status.klippy_state === "shutdown" || status.klippy_state === "error") {
+        banner.hidden = false;
+        banner.textContent = "Klipper is shut down. If a material was just selected or loaded on the touchscreen, Apply changes reloads the catalog and restarts Klipper and the screen.";
+      } else if (status.klipper_stale) {
+        banner.hidden = false;
+        banner.textContent = "The catalog has changed since Klipper last read it. Do not select a new or renamed material on the touchscreen until you Apply changes. Klipper shuts down when it is sent a material it does not know.";
+      } else if (status.stale) {
+        banner.hidden = false;
+        banner.textContent = "The catalog has changed since the touchscreen started. Apply changes, or Restart touchscreen, to show it on the screen.";
+      } else if (status.client_unit && status.client_active === false) {
+        banner.hidden = false;
+        banner.textContent = "The touchscreen client is not running. Klipper is left alone.";
+      } else {
+        banner.hidden = true;
+        banner.textContent = "";
+      }
+      applyButton.disabled = busy || !status.apply_allowed;
+      applyButton.title = status.apply_block || "Restart Klipper's firmware, then the touchscreen, so both read the catalog.";
+      applyReason.hidden = !status.apply_block;
+      applyReason.textContent = status.apply_block || "";
+      restartButton.disabled = busy || !status.restart_allowed;
+      restartButton.title = status.restart_block || "Restart the touchscreen client. Klipper keeps running.";
+      restartReason.hidden = !status.restart_block;
+      restartReason.textContent = status.restart_block || "";
+      rebootButton.disabled = busy || !status.reboot_allowed;
+      rebootButton.title = status.reboot_block || "Reboot the printer. Klipper restarts too.";
+      rebootReason.hidden = !status.reboot_block;
+      rebootReason.textContent = status.reboot_block || "";
+    }
+
+    function matches(row) {
+      const vendor = vendorFilter.value;
+      if (vendor && row.vendor !== vendor) return false;
+      const query = searchInput.value.trim().toLowerCase();
+      if (!query) return true;
+      return [row.name, row.type, row.id, row.vendor].join("\n").toLowerCase().includes(query);
+    }
+
+    function temperature(low, high, suffix) {
+      if (low == null || high == null) return "—";
+      return low + "–" + high + suffix;
+    }
+
+    function renderTable() {
+      const visible = materials.filter(matches);
+      rowsBody.replaceChildren();
+      if (!visible.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 7;
+        td.textContent = materials.length ? "No materials match." : "The catalog is empty.";
+        tr.append(td);
+        rowsBody.append(tr);
+        return;
+      }
+      for (const row of visible) {
+        const tr = document.createElement("tr");
+        const nameCell = document.createElement("td");
+        nameCell.textContent = row.name;
+        if (row.added_here) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "Added here";
+          nameCell.append(badge);
+        }
+        const inUse = row.in_use || [];
+        if (inUse.length) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "In use";
+          badge.title = "Selected on " + inUse.join(", ");
+          nameCell.append(badge);
+        }
+        const cells = [
+          nameCell,
+          textCell(row.type),
+          textCell(row.id),
+          textCell(row.vendor),
+          textCell(temperature(row.nozzle_min, row.nozzle_max, " °C")),
+          textCell(row.chamber === "" ? "—" : row.chamber + " °C")
+        ];
+        const actions = document.createElement("td");
+        actions.className = "actions";
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "small secondary";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", function () { openEdit(row); });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "small secondary danger";
+        remove.textContent = "Remove";
+        if (inUse.length) {
+          remove.disabled = true;
+          remove.title = "Selected on " + inUse.join(", ") + ". Choose another material for that slot on the touchscreen first.";
+        }
+        remove.addEventListener("click", function () { removeRow(row); });
+        actions.append(edit, remove);
+        cells.push(actions);
+        tr.append(...cells);
+        rowsBody.append(tr);
+      }
+    }
+
+    function textCell(value) {
+      const td = document.createElement("td");
+      td.textContent = value;
+      return td;
+    }
+
+    function fillSelect(select, values, previous, placeholder) {
+      select.replaceChildren();
+      if (placeholder) {
+        const all = document.createElement("option");
+        all.value = "";
+        all.textContent = placeholder;
+        select.append(all);
+      }
+      for (const value of values) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.append(option);
+      }
+      const allowed = values.concat(placeholder ? [""] : []);
+      if (allowed.includes(previous)) select.value = previous;
+    }
+
+    function renderTemplates() {
+      const names = materials.map(function (row) { return row.name; });
+      const previous = templateSelect.value;
+      fillSelect(templateSelect, names, previous, "");
+      if (!names.includes(previous)) fillFromTemplate();
+      if (!templatesReady) {
+        fillFromTemplate();
+        templatesReady = true;
+      }
+    }
+
+    function renderVendors() {
+      const vendors = [];
+      for (const row of materials) {
+        if (row.vendor && vendors.indexOf(row.vendor) === -1) vendors.push(row.vendor);
+      }
+      vendors.sort(function (a, b) { return a.localeCompare(b); });
+      fillSelect(vendorFilter, vendors, vendorFilter.value, "All vendors");
+      vendorList.replaceChildren();
+      for (const vendor of vendors) {
+        const option = document.createElement("option");
+        option.value = vendor;
+        vendorList.append(option);
+      }
+    }
+
+    function fillFromTemplate() {
+      const row = materials.find(function (item) { return item.name === templateSelect.value; });
+      if (!row) return;
+      document.getElementById("add-type").value = row.type;
+      document.getElementById("add-vendor").value = row.vendor;
+      refreshPreview("add");
+      document.getElementById("add-nozzle-min").value = row.nozzle_min == null ? "" : row.nozzle_min;
+      document.getElementById("add-nozzle-max").value = row.nozzle_max == null ? "" : row.nozzle_max;
+      document.getElementById("add-chamber").value = row.chamber;
+    }
+
+    function renderBackups(backups) {
+      backupList.replaceChildren();
+      if (!backups.length) {
+        const p = document.createElement("p");
+        p.className = "hint";
+        p.textContent = "No backups yet. Every change saves one, and Back up now saves one without editing.";
+        backupList.append(p);
+        return;
+      }
+      const table = document.createElement("table");
+      const head = document.createElement("tr");
+      for (const label of ["When", "Where", "Size", ""]) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        head.append(th);
+      }
+      const thead = document.createElement("thead");
+      thead.append(head);
+      const tbody = document.createElement("tbody");
+      const whereLabel = { beside: "Beside the catalog", config: "printer_data/config" };
+      for (const item of backups) {
+        const tr = document.createElement("tr");
+        tr.append(textCell(new Date(item.modified * 1000).toLocaleString()));
+        tr.append(textCell(whereLabel[item.where] || item.where));
+        tr.append(textCell(item.size < 1024 ? item.size + " B" : (item.size / 1024).toFixed(1) + " KB"));
+        const actions = document.createElement("td");
+        actions.className = "actions";
+        const download = document.createElement("a");
+        download.href = "/api/backups/" + encodeURIComponent(item.name) + "?where=" + encodeURIComponent(item.where);
+        download.textContent = "Download";
+        const restore = document.createElement("button");
+        restore.type = "button";
+        restore.className = "small secondary";
+        restore.textContent = "Restore";
+        restore.addEventListener("click", function () { restoreBackup(item); });
+        actions.append(download, restore);
+        tr.append(actions);
+        tbody.append(tr);
+      }
+      table.append(thead, tbody);
+      backupList.append(table);
+    }
+
+    async function reload() {
+      const status = await api("/api/status");
+      applyStatus(status);
+      if (!status.found) return;
+      const listed = await api("/api/filaments");
+      const saved = await api("/api/backups");
+      materials = listed.filaments || [];
+      renderTemplates();
+      renderVendors();
+      renderTable();
+      renderBackups(saved.backups || []);
+    }
+
+    async function refreshStatus() {
+      const previous = lastStatus && lastStatus.count;
+      const status = await api("/api/status");
+      applyStatus(status);
+      if (status.found && previous != null && status.count !== previous) {
+        const listed = await api("/api/filaments");
+        const saved = await api("/api/backups");
+        materials = listed.filaments || [];
+        renderTemplates();
+        renderVendors();
+        renderTable();
+        renderBackups(saved.backups || []);
+      }
+    }
+
+    function openEdit(row) {
+      editError.hidden = true;
+      document.getElementById("edit-original").value = row.name;
+      document.getElementById("edit-vendor").value = row.vendor;
+      document.getElementById("edit-material").value = materialFromName(row.name, row.vendor);
+      document.getElementById("edit-type").value = row.type;
+      document.getElementById("edit-id").value = row.id;
+      refreshPreview("edit");
+      document.getElementById("edit-nozzle-min").value = row.nozzle_min == null ? "" : row.nozzle_min;
+      document.getElementById("edit-nozzle-max").value = row.nozzle_max == null ? "" : row.nozzle_max;
+      document.getElementById("edit-chamber").value = row.chamber;
+      editDialog.showModal();
+    }
+
+    function ask(title, text, yesLabel) {
+      if (confirmDialog.open) return Promise.resolve(false);
+      confirmTitle.textContent = title;
+      confirmText.textContent = text;
+      confirmYes.textContent = yesLabel;
+      return new Promise(function (resolve) {
+        function finish(value) {
+          confirmYes.removeEventListener("click", onYes);
+          confirmNo.removeEventListener("click", onNo);
+          confirmDialog.removeEventListener("cancel", onCancel);
+          if (confirmDialog.open) confirmDialog.close();
+          resolve(value);
+        }
+        function onYes() { finish(true); }
+        function onNo() { finish(false); }
+        function onCancel(event) {
+          event.preventDefault();
+          finish(false);
+        }
+        confirmYes.addEventListener("click", onYes);
+        confirmNo.addEventListener("click", onNo);
+        confirmDialog.addEventListener("cancel", onCancel);
+        confirmDialog.showModal();
+      });
+    }
+
+    async function removeRow(row) {
+      if (busy) return;
+      const label = row.type && row.type !== row.name ? row.name + " (" + row.type + ")" : row.name;
+      const confirmed = await ask("Remove this material?", "Remove " + label + " from the catalog?", "Remove");
+      if (!confirmed) return;
+      busy = true;
+      try {
+        const result = await api("/api/filaments/delete", { name: row.name });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    async function restoreBackup(item) {
+      if (busy) return;
+      const where = item.where === "config" ? "the printer_data/config copy" : "the copy beside the catalog";
+      const confirmed = await ask(
+        "Restore this backup?",
+        "Restore " + item.name + " from " + where + "? The current catalog is backed up first.",
+        "Restore"
+      );
+      if (!confirmed) return;
+      busy = true;
+      try {
+        const result = await api("/api/restore", { name: item.name, where: item.where });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    document.getElementById("add-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      if (busy) return;
+      let payload;
+      try {
+        payload = identityPayload("add");
+        payload.template = templateSelect.value;
+      } catch (err) {
+        showError(err.message);
+        return;
+      }
+      busy = true;
+      try {
+        const result = await api("/api/filaments", payload);
+        showNotice(result.message);
+        document.getElementById("add-material").value = "";
+        document.getElementById("add-id").value = "";
+        refreshPreview("add");
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    document.getElementById("edit-form").addEventListener("submit", async function (event) {
+      event.preventDefault();
+      if (busy) return;
+      let payload;
+      try {
+        payload = identityPayload("edit");
+        payload.original = document.getElementById("edit-original").value;
+      } catch (err) {
+        editError.hidden = false;
+        editError.textContent = err.message;
+        return;
+      }
+      busy = true;
+      try {
+        const result = await api("/api/filaments/update", payload);
+        editDialog.close();
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        editError.hidden = false;
+        editError.textContent = err.message;
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    document.getElementById("edit-cancel").addEventListener("click", function () {
+      editDialog.close();
+    });
+    templateSelect.addEventListener("change", fillFromTemplate);
+    searchInput.addEventListener("input", renderTable);
+    vendorFilter.addEventListener("change", renderTable);
+
+    document.getElementById("backup").addEventListener("click", async function () {
+      if (busy) return;
+      busy = true;
+      try {
+        const result = await api("/api/backup", {});
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    for (const prefix of ["add", "edit"]) {
+      document.getElementById(prefix + "-vendor").addEventListener("input", function () { refreshPreview(prefix); });
+      document.getElementById(prefix + "-material").addEventListener("input", function () { refreshPreview(prefix); });
+    }
+    refreshPreview("add");
+
+    rebootButton.addEventListener("click", async function () {
+      if (busy || rebootButton.disabled) return;
+      const confirmed = await ask(
+        "Reboot the printer?",
+        "The whole printer reboots, including Klipper. This page disconnects until the printer is back.",
+        "Reboot"
+      );
+      if (!confirmed) return;
+      busy = true;
+      rebootButton.disabled = true;
+      try {
+        const result = await api("/api/reboot", {});
+        showNotice(result.message);
+      } catch (err) {
+        showError(err.message);
+        try { await refreshStatus(); } catch (statusErr) { /* status is optional after a refused reboot */ }
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    applyButton.addEventListener("click", async function () {
+      if (busy || applyButton.disabled) return;
+      const confirmed = await ask(
+        "Apply changes?",
+        "Klipper's firmware restarts, then the touchscreen. Heaters turn off and the screen goes blank for about half a minute.",
+        "Apply"
+      );
+      if (!confirmed) return;
+      busy = true;
+      applyButton.disabled = true;
+      showNotice("Restarting Klipper. This takes up to a minute.");
+      try {
+        const result = await api("/api/apply", {});
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+        try { await refreshStatus(); } catch (statusErr) { /* status is optional after a failed apply */ }
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    restartButton.addEventListener("click", async function () {
+      if (busy || restartButton.disabled) return;
+      busy = true;
+      restartButton.disabled = true;
+      try {
+        const result = await api("/api/restart", {});
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+        try { await refreshStatus(); } catch (statusErr) { /* status is optional after a failed restart */ }
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    });
+
+    reload().then(function () {
+      window.setInterval(function () {
+        if (busy) return;
+        refreshStatus().catch(function () { /* keep the page usable if a poll fails */ });
+      }, 5000);
+    }).catch(function (err) {
+      showError(err.message);
+    });
+  </script>
+</body>
+</html>

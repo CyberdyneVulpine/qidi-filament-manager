@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""Stdlib checks for catalog edits and the local HTTP API."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import catalog
+import server
+
+
+SAMPLE = """\
+{
+  "Alpha PLA": {
+    "type": "PLA",
+    "filament_id": "QFA01",
+    "filament_vendor": "QIDI",
+    "chamber_temperatures": "0",
+    "nozzle_temperature": [190, 220],
+    "note": "alpha } note"
+  },
+  "Beta Nylon": {
+    "type": "NYLON",
+    "filament_id": "QFN05",
+    "filament_vendor": "QIDI",
+    "chamber_temperatures": "55",
+    "nozzle_temperature": [280, 300],
+    "note": "beta-note"
+  },
+  "Gamma PETG": {
+    "type": "PETG",
+    "filament_id": "QFG10",
+    "filament_vendor": "Generic",
+    "chamber_temperatures": "45",
+    "nozzle_temperature": [
+      230,
+      250
+    ],
+    "note": "gamma-note"
+  }
+}
+"""
+
+ODD = """\
+{
+  "Odd": {
+    "type": "PLA",
+    "type": "PLA",
+    "filament_id": "QFA77",
+    "filament_vendor": "QIDI",
+    "chamber_temperatures": "0",
+    "nozzle_temperature": [190, 210],
+    "note": "odd-note"
+  },
+  "Other": {
+    "type": "PETG",
+    "filament_id": "QFG11",
+    "filament_vendor": "Generic",
+    "chamber_temperatures": "40",
+    "nozzle_temperature": [230, 250],
+    "note": "other-note"
+  }
+}
+"""
+
+
+def parsed(layout):
+    text = layout.catalog.read_bytes().decode("utf-8")
+    return text, json.loads(text)
+
+
+class CatalogTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def make_home(self, user, text=SAMPLE):
+        home = Path(self.tmp.name) / user
+        catalog_path = home / catalog.CATALOG_RELATIVE
+        catalog_path.parent.mkdir(parents=True, exist_ok=True)
+        catalog_path.write_bytes(text.encode("utf-8"))
+        return home
+
+    def layout(self, text=SAMPLE):
+        home = self.make_home("qidi", text)
+        found = catalog.discover([home])
+        self.assertIsNotNone(found)
+        return found
+
+    def test_discover_prefers_the_first_home_and_falls_through(self):
+        qidi = self.make_home("qidi", SAMPLE.replace("alpha } note", "from-qidi"))
+        mks = self.make_home("mks", SAMPLE.replace("alpha } note", "from-mks"))
+        self.assertEqual(catalog.discover([qidi, mks]).home, qidi)
+        self.assertEqual(catalog.discover([mks]).home, mks)
+        self.assertIsNone(catalog.discover([Path(self.tmp.name) / "missing"]))
+        self.assertEqual(
+            [path.name for path in catalog.default_homes()],
+            ["qidi", "mks"],
+        )
+        message = catalog.missing_catalog_message()
+        self.assertIn("does not use that catalog", message)
+        self.assertIn("/home/qidi/", message.replace("\\", "/"))
+        self.assertIn("/home/mks/", message.replace("\\", "/"))
+
+    def test_add_copies_template_and_leaves_other_entries(self):
+        layout = self.layout()
+        before_text, before = parsed(layout)
+        result = catalog.add_filament(
+            layout,
+            "Beta Nylon",
+            "Generic Delta Nylon",
+            "NYLON",
+            "QFN90",
+            "Generic",
+        )
+        self.assertTrue(result.changed)
+        self.assertEqual(result.before_count, 3)
+        self.assertEqual(result.after_count, 4)
+        text, data = parsed(layout)
+        self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
+        self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
+        self.assertEqual(data["Beta Nylon"], before["Beta Nylon"])
+        self.assertEqual(data["Generic Delta Nylon"]["note"], "beta-note")
+        self.assertEqual(data["Generic Delta Nylon"]["filament_id"], "QFN90")
+        self.assertEqual(data["Generic Delta Nylon"]["filament_vendor"], "Generic")
+        self.assertEqual(text.count("beta-note"), 2)
+        self.assertEqual(text.count("alpha } note"), 1)
+        self.assertEqual(before_text.count("alpha } note"), 1)
+        self.assertTrue(result.beside.is_file())
+        self.assertTrue(result.config_copy.is_file())
+        self.assertEqual(result.beside.read_bytes(), before_text.encode("utf-8"))
+        self.assertEqual(result.config_copy.read_bytes(), before_text.encode("utf-8"))
+
+    def test_add_from_the_last_entry_stays_valid_json(self):
+        layout = self.layout()
+        _, before = parsed(layout)
+        catalog.add_filament(layout, "Gamma PETG", "Generic Gamma Copy", "PETG-HF", "QFG90", "Generic", nozzle=(232, 255), chamber="50")
+        text, data = parsed(layout)
+        self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
+        self.assertEqual(data["Beta Nylon"], before["Beta Nylon"])
+        self.assertEqual(data["Generic Gamma Copy"]["nozzle_temperature"], [232, 255])
+        self.assertEqual(data["Generic Gamma Copy"]["chamber_temperatures"], "50")
+        self.assertEqual(data["Generic Gamma Copy"]["note"], "gamma-note")
+        self.assertNotRegex(text, r",\s*\}")
+
+    def test_duplicate_id_and_broken_template_do_not_write(self):
+        layout = self.layout()
+        original = layout.catalog.read_bytes()
+        with self.assertRaises(catalog.CatalogError):
+            catalog.add_filament(layout, "Alpha PLA", "Generic Other", "PLA", "QFA01", "Generic")
+        self.assertEqual(layout.catalog.read_bytes(), original)
+        self.assertEqual(list(layout.catalog.parent.glob("filament-0.4.json.bak-*")), [])
+
+        odd = self.layout(ODD)
+        odd_bytes = odd.catalog.read_bytes()
+        with self.assertRaises(catalog.CatalogError):
+            catalog.add_filament(odd, "Odd", "Generic Odd Copy", "PLA-HF", "QFA78", "Generic")
+        self.assertEqual(odd.catalog.read_bytes(), odd_bytes)
+        self.assertFalse(odd.config_dir.exists() and any(odd.config_dir.glob("filament-0.4.json.bak-*")))
+
+    def test_name_must_match_vendor(self):
+        layout = self.layout()
+        original = layout.catalog.read_bytes()
+        with self.assertRaises(catalog.CatalogError) as mismatched:
+            catalog.add_filament(layout, "Alpha PLA", "Bar PETG", "PETG", "QFA91", "Foo")
+        self.assertIn("load list", str(mismatched.exception))
+        with self.assertRaises(catalog.CatalogError) as spaced:
+            catalog.add_filament(layout, "Alpha PLA", "Foo Bar PETG", "PETG", "QFA91", "Foo Bar")
+        self.assertIn("single word", str(spaced.exception))
+        with self.assertRaises(catalog.CatalogError):
+            catalog.update_filament(layout, "Alpha PLA", "Bar PETG", "PLA", "QFA01", "Foo")
+        self.assertEqual(layout.catalog.read_bytes(), original)
+        catalog.add_filament(layout, "Alpha PLA", "Foo PETG", "PETG", "QFA91", "Foo")
+        _, data = parsed(layout)
+        self.assertEqual(data["Foo PETG"]["filament_vendor"], "Foo")
+
+    def test_idempotent_add_does_not_back_up_again(self):
+        layout = self.layout()
+        catalog.add_filament(layout, "Alpha PLA", "Generic Alpha Copy", "PLA", "QFA90", "Generic")
+        backups = catalog.list_backups(layout)
+        again = catalog.add_filament(layout, "Alpha PLA", "Generic Alpha Copy", "PLA", "QFA90", "Generic")
+        self.assertFalse(again.changed)
+        self.assertIn("already present", again.message)
+        self.assertEqual(catalog.list_backups(layout), backups)
+
+    def test_update_rename_and_delete_positions(self):
+        layout = self.layout()
+        _, before = parsed(layout)
+        renamed = catalog.update_filament(
+            layout,
+            "Beta Nylon",
+            "Generic Beta HF",
+            "NYLON-HF",
+            "QFN90",
+            "Generic",
+            nozzle=(270, 290),
+            chamber="60",
+        )
+        self.assertTrue(renamed.changed)
+        _, data = parsed(layout)
+        self.assertNotIn("Beta Nylon", data)
+        self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
+        self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
+        self.assertEqual(data["Generic Beta HF"]["note"], "beta-note")
+        self.assertEqual(data["Generic Beta HF"]["nozzle_temperature"], [270, 290])
+        self.assertEqual(data["Generic Beta HF"]["chamber_temperatures"], "60")
+        self.assertEqual(data["Generic Beta HF"]["filament_id"], "QFN90")
+
+        unchanged = catalog.update_filament(
+            layout,
+            "Generic Beta HF",
+            "Generic Beta HF",
+            "NYLON-HF",
+            "QFN90",
+            "Generic",
+            nozzle=(270, 290),
+            chamber="60",
+        )
+        self.assertFalse(unchanged.changed)
+
+        with self.assertRaises(catalog.CatalogError):
+            catalog.update_filament(layout, "Generic Beta HF", "Gamma PETG", "NYLON-HF", "QFN90", "Generic")
+
+        catalog.delete_filament(layout, "Alpha PLA")
+        text, data = parsed(layout)
+        self.assertNotIn("Alpha PLA", data)
+        self.assertNotIn("alpha } note", text)
+        self.assertNotIn('"Alpha PLA"', text)
+        self.assertEqual(data["Gamma PETG"]["note"], "gamma-note")
+        self.assertEqual(data["Generic Beta HF"]["note"], "beta-note")
+        json.loads(text)
+
+        catalog.delete_filament(layout, "Gamma PETG")
+        text, data = parsed(layout)
+        self.assertEqual(list(data), ["Generic Beta HF"])
+        self.assertNotRegex(text, r",\s*\}")
+        with self.assertRaises(catalog.CatalogError) as ctx:
+            catalog.delete_filament(layout, "Generic Beta HF")
+        self.assertIn("cannot be emptied", str(ctx.exception))
+        self.assertEqual(list(parsed(layout)[1]), ["Generic Beta HF"])
+
+    def test_delete_middle_entry(self):
+        layout = self.layout()
+        _, before = parsed(layout)
+        catalog.delete_filament(layout, "Beta Nylon")
+        text, data = parsed(layout)
+        self.assertEqual(set(data), {"Alpha PLA", "Gamma PETG"})
+        self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
+        self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
+        self.assertNotIn("beta-note", text)
+        self.assertNotRegex(text, r",\s*\}")
+
+    def test_baseline_marks_only_later_ids(self):
+        layout = self.layout()
+        rows = catalog.filament_rows(layout)
+        self.assertTrue(all(not row["added_here"] for row in rows["filaments"]))
+        baseline = layout.state_dir / catalog.BASELINE_NAME
+        recorded = baseline.read_bytes()
+        catalog.add_filament(layout, "Beta Nylon", "Generic Delta Nylon", "NYLON", "QFN90", "Generic")
+        rows = catalog.filament_rows(layout)
+        added = [row["id"] for row in rows["filaments"] if row["added_here"]]
+        self.assertEqual(added, ["QFN90"])
+        self.assertEqual(baseline.read_bytes(), recorded)
+
+    def test_backup_restore_and_rejected_names(self):
+        layout = self.layout()
+        original = layout.catalog.read_bytes()
+        saved = catalog.create_backup(layout)
+        self.assertEqual(layout.catalog.read_bytes(), original)
+        self.assertEqual(saved.beside.read_bytes(), original)
+        self.assertEqual(saved.config_copy.read_bytes(), original)
+        catalog.delete_filament(layout, "Gamma PETG")
+        self.assertNotIn(b"gamma-note", layout.catalog.read_bytes())
+        config_copies = [row for row in catalog.list_backups(layout) if row["where"] == "config"]
+        self.assertGreaterEqual(len(config_copies), 1)
+        manual = next(row for row in config_copies if row["name"] == saved.config_copy.name)
+        restored = catalog.restore_backup(layout, manual["name"], "config")
+        self.assertTrue(restored.changed)
+        self.assertEqual(layout.catalog.read_bytes(), original)
+        same = catalog.restore_backup(layout, manual["name"], "config")
+        self.assertFalse(same.changed)
+        with self.assertRaises(catalog.CatalogError):
+            catalog.resolve_backup(layout, "../filament-0.4.json.bak-20260101_000000", "config")
+        with self.assertRaises(catalog.CatalogError):
+            catalog.resolve_backup(layout, "filament-0.4.json", "beside")
+        with self.assertRaises(catalog.CatalogError):
+            catalog.add_filament(layout, "Alpha PLA", 'Bad "Name', "PLA", "QFA91", "Generic")
+
+    def write_saved_variables(self, layout, external="'QFN05'"):
+        layout.config_dir.mkdir(parents=True, exist_ok=True)
+        (layout.config_dir / catalog.SAVED_VARIABLES_NAME).write_text(
+            "[Variables]\n"
+            "color_slot16 = ['228332']\n"
+            "filament_slot0 = 1\n"
+            "filament_slot5 = 'QFG10'\n"
+            f"filament_slot16 = {external}\n"
+            "last_load_slot = 'slot16'\n",
+            encoding="utf-8",
+        )
+
+    def test_slots_in_use_reads_string_ids_only(self):
+        layout = self.layout()
+        self.assertEqual(catalog.slots_in_use(layout), {})
+        self.write_saved_variables(layout)
+        self.assertEqual(catalog.slots_in_use(layout), {"QFN05": [16], "QFG10": [5]})
+        self.assertEqual(catalog.slot_label(16), "the external spool")
+        self.assertEqual(catalog.slot_label(5), "box 2 slot 2")
+        rows = {row["name"]: row for row in catalog.filament_rows(layout)["filaments"]}
+        self.assertEqual(rows["Beta Nylon"]["in_use"], ["the external spool"])
+        self.assertEqual(rows["Alpha PLA"]["in_use"], [])
+
+    def test_in_use_ids_cannot_be_removed_or_renumbered(self):
+        layout = self.layout()
+        self.write_saved_variables(layout)
+        original = layout.catalog.read_bytes()
+        with self.assertRaises(catalog.CatalogError) as removed:
+            catalog.delete_filament(layout, "Beta Nylon")
+        self.assertIn("external spool", str(removed.exception))
+        with self.assertRaises(catalog.CatalogError) as renumbered:
+            catalog.update_filament(layout, "Beta Nylon", "QIDI Beta Nylon", "NYLON", "QFN99", "QIDI")
+        self.assertIn("change its id", str(renumbered.exception))
+        self.assertEqual(layout.catalog.read_bytes(), original)
+
+        renamed = catalog.update_filament(layout, "Beta Nylon", "QIDI Beta Renamed", "NYLON", "QFN05", "QIDI")
+        self.assertTrue(renamed.changed)
+        catalog.delete_filament(layout, "Alpha PLA")
+
+    def test_restore_keeps_ids_that_slots_use(self):
+        layout = self.layout()
+        saved = catalog.create_backup(layout)
+        catalog.add_filament(layout, "Alpha PLA", "Generic Alpha Copy", "PLA", "QFA90", "Generic")
+        self.write_saved_variables(layout, external="'QFA90'")
+        with self.assertRaises(catalog.CatalogError) as ctx:
+            catalog.restore_backup(layout, saved.config_copy.name, "config")
+        self.assertIn("QFA90", str(ctx.exception))
+        self.assertIn("Generic Alpha Copy", parsed(layout)[1])
+        self.write_saved_variables(layout)
+        self.assertTrue(catalog.restore_backup(layout, saved.config_copy.name, "config").changed)
+
+    def test_untouched_guard_names_the_entry(self):
+        original = {"A": {"filament_id": "1"}, "B": {"filament_id": "2"}}
+        updated = {"A": {"filament_id": "1"}, "B": {"filament_id": "9"}}
+        with self.assertRaises(catalog.CatalogError) as ctx:
+            catalog.ensure_untouched(original, updated, {"A"})
+        self.assertIn("B", str(ctx.exception))
+
+
+class ServerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name) / "qidi"
+        catalog_path = home / catalog.CATALOG_RELATIVE
+        catalog_path.parent.mkdir(parents=True)
+        catalog_path.write_bytes(SAMPLE.encode("utf-8"))
+        self.home = home
+
+    def test_primary_color_from_fluidd_theme(self):
+        self.assertEqual(server.primary_from_theme({"color": "#9d00eb", "isDark": True}), "#9d00eb")
+        self.assertEqual(server.primary_from_theme({"color": "  #ABC "}), "#ABC")
+        self.assertEqual(server.primary_from_theme({"color": "red"}), server.DEFAULT_PRIMARY)
+        self.assertEqual(server.primary_from_theme(None), server.DEFAULT_PRIMARY)
+        self.assertEqual(server.primary_from_theme({"color": "#12"}), server.DEFAULT_PRIMARY)
+
+    def test_port_and_stale_flag(self):
+        self.assertEqual(server.listen_port("8091"), 8091)
+        with self.assertRaises(ValueError):
+            server.listen_port("0")
+        with self.assertRaises(ValueError):
+            server.listen_port("nope")
+        path = self.home / catalog.CATALOG_RELATIVE
+        os.utime(path, (1_000, 1_000))
+        self.assertIsNone(server.catalog_changed_since_start(path, None))
+        self.assertFalse(server.catalog_changed_since_start(path, 2_000))
+        self.assertTrue(server.catalog_changed_since_start(path, 100))
+
+    def test_print_state_reads_moonraker_shape(self):
+        class Quiet(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"result": {"status": {"print_stats": {"state": "standby"}}}}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, fmt, *args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop)
+        port = httpd.server_address[1]
+        state = server.read_print_state(f"http://127.0.0.1:{port}/printer/objects/query?print_stats")
+        self.assertEqual(state, "standby")
+
+    def test_monotonic_stamp_ignores_boot_clock(self):
+        started = server.monotonic_to_wall("8262489", now_wall=10_000.0, now_monotonic=100.0)
+        self.assertAlmostEqual(started, 10_000.0 - (100.0 - 8.262489))
+        self.assertIsNone(server.monotonic_to_wall("0"))
+        self.assertIsNone(server.monotonic_to_wall("n/a"))
+
+    def test_applied_record_only_counts_for_this_boot(self):
+        state_dir = self.home / "filament-manager" / "state"
+        self.assertIsNone(server.read_applied(state_dir, "boot-a"))
+        server.record_applied(state_dir, "boot-a", 1234.5)
+        self.assertEqual(server.read_applied(state_dir, "boot-a"), 1234.5)
+        self.assertIsNone(server.read_applied(state_dir, "boot-b"))
+        self.assertIsNone(server.read_applied(state_dir, None))
+
+    def test_idle_and_apply_rules(self):
+        self.assertIsNone(server.idle_block("standby", None, "Restart"))
+        self.assertIsNone(server.idle_block("complete", None, "Restart"))
+        self.assertIn("printing", server.idle_block("printing", None, "Restart"))
+        self.assertIn("paused", server.idle_block("paused", None, "Reboot"))
+        self.assertEqual(server.idle_block(None, "no moonraker", "Restart"), "no moonraker")
+        self.assertIsNone(server.apply_block("printing", None, "shutdown"))
+        self.assertIsNone(server.apply_block(None, "no print state", "error"))
+        self.assertIn("printing", server.apply_block("printing", None, "ready"))
+
+    def test_wait_ignores_the_state_from_before_the_restart(self):
+        def run(states):
+            sequence = list(states)
+            now = [0.0]
+
+            def fake_read(url):
+                state = sequence.pop(0) if sequence else "ready"
+                if state is None:
+                    raise server.ActionError("down")
+                return state, f"{state} message"
+
+            original = server.read_klippy_state
+            server.read_klippy_state = fake_read
+            try:
+                return server.wait_for_klipper(
+                    "unused",
+                    timeout=30,
+                    sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+                    clock=lambda: now[0],
+                )
+            finally:
+                server.read_klippy_state = original
+
+        self.assertEqual(run(["shutdown", None, "startup", "ready"])[0], "ready")
+        self.assertEqual(run(["ready", "startup", "shutdown"])[0], "shutdown")
+        self.assertEqual(run(["ready"] * 40)[0], "ready")
+        with self.assertRaises(server.ActionError):
+            run(["startup"] * 40)
+
+    def fake_moonraker(self, klippy_state, print_state):
+        calls = []
+
+        class Fake(BaseHTTPRequestHandler):
+            def reply(self, payload):
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path.startswith("/printer/info"):
+                    self.reply({"result": {"state": klippy_state, "state_message": "msg"}})
+                else:
+                    self.reply({"result": {"status": {"print_stats": {"state": print_state}}}})
+
+            def do_POST(self):
+                calls.append(self.path)
+                self.reply({"result": "ok"})
+
+            def log_message(self, fmt, *args):
+                return
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        return base, calls
+
+    def test_apply_restarts_klipper_and_records_it(self):
+        if server.client_state()["unit_installed"]:
+            self.skipTest("qidi-client is installed here")
+        layout = catalog.discover([self.home])
+        base, calls = self.fake_moonraker("ready", "printing")
+        urls = {
+            "info_url": base + "/printer/info",
+            "restart_url": base + "/printer/firmware_restart",
+            "print_url": base + "/printer/objects/query?print_stats",
+        }
+        with self.assertRaises(server.ActionError) as busy:
+            server.apply_changes(layout, wait=lambda url: ("ready", ""), **urls)
+        self.assertIn("printing", str(busy.exception))
+        self.assertEqual(calls, [])
+
+        base, calls = self.fake_moonraker("shutdown", "error")
+        urls = {
+            "info_url": base + "/printer/info",
+            "restart_url": base + "/printer/firmware_restart",
+            "print_url": base + "/printer/objects/query?print_stats",
+        }
+        with self.assertRaises(server.ActionError) as still_down:
+            server.apply_changes(layout, wait=lambda url: ("shutdown", "boom"), **urls)
+        self.assertIn("shutdown", str(still_down.exception))
+        self.assertEqual(calls, ["/printer/firmware_restart"])
+
+        original_boot = server.boot_id
+        server.boot_id = lambda path=None: "boot-a"
+        try:
+            result = server.apply_changes(layout, wait=lambda url: ("ready", ""), **urls)
+            self.assertTrue(result["ok"])
+            self.assertIsNotNone(server.read_applied(layout.state_dir, "boot-a"))
+            os.utime(layout.catalog, (1_000, 1_000))
+            self.assertFalse(server._klipper_stale(layout))
+        finally:
+            server.boot_id = original_boot
+
+    def test_http_round_trip(self):
+        if server.client_state()["unit_installed"]:
+            self.skipTest("qidi-client is installed here")
+        httpd = server.create_server("127.0.0.1", 0, homes=[self.home])
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop)
+        port = httpd.server_address[1]
+
+        def call(path, payload=None, content_type="application/json"):
+            data = None if payload is None else json.dumps(payload).encode("utf-8")
+            headers = {}
+            if payload is not None:
+                headers["Content-Type"] = content_type
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}{path}",
+                data=data,
+                headers=headers,
+                method="GET" if payload is None else "POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    return response.status, response.read()
+            except urllib.error.HTTPError as exc:
+                return exc.code, exc.read()
+
+        status, page = call("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Filament manager", page)
+        self.assertIn(b"Reboot printer", page)
+        self.assertIn(b"Apply changes", page)
+        self.assertIn(b"The whole printer reboots, including Klipper.", page)
+        self.assertIn(b"add-material", page)
+
+        status, body = call("/api/status")
+        self.assertEqual(status, 200)
+        status_payload = json.loads(body)
+        self.assertTrue(status_payload["found"])
+        self.assertFalse(status_payload["restart_allowed"])
+        self.assertFalse(status_payload["reboot_allowed"])
+        self.assertFalse(status_payload["apply_allowed"])
+        self.assertTrue(str(status_payload["primary"]).startswith("#"))
+
+        status, body = call("/api/filaments")
+        filaments = json.loads(body)
+        self.assertEqual(filaments["count"], 3)
+        self.assertTrue(all(not row["added_here"] for row in filaments["filaments"]))
+
+        status, body = call("/api/filaments", {
+            "template": "Beta Nylon",
+            "name": "Generic Delta Nylon",
+            "type": "NYLON",
+            "id": "QFN90",
+            "vendor": "Generic",
+        })
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["changed"])
+
+        status, body = call("/api/filaments")
+        rows = json.loads(body)["filaments"]
+        added = [row for row in rows if row["added_here"]]
+        self.assertEqual([row["name"] for row in added], ["Generic Delta Nylon"])
+
+        status, body = call("/api/filaments/update", {
+            "original": "Generic Delta Nylon",
+            "name": "Generic Delta HF",
+            "type": "NYLON-HF",
+            "id": "QFN91",
+            "vendor": "Generic",
+            "nozzle_min": 275,
+            "nozzle_max": 295,
+            "chamber": "58",
+        })
+        self.assertEqual(status, 200, body)
+        _, data = parsed(catalog.discover([self.home]))
+        self.assertEqual(data["Generic Delta HF"]["nozzle_temperature"], [275, 295])
+        self.assertEqual(data["Alpha PLA"]["note"], "alpha } note")
+        self.assertEqual(data["Gamma PETG"]["note"], "gamma-note")
+
+        status, body = call("/api/filaments/delete", {"name": "Generic Delta HF"})
+        self.assertEqual(status, 200, body)
+
+        status, body = call("/api/backup", {})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/backups")
+        backups = json.loads(body)["backups"]
+        self.assertTrue(any(row["where"] == "config" for row in backups))
+        config_copy = next(row for row in backups if row["where"] == "config")
+        status, downloaded = call("/api/backups/" + config_copy["name"] + "?where=config")
+        self.assertEqual(status, 200)
+        downloaded_catalog = json.loads(downloaded)
+        self.assertEqual(downloaded_catalog["Gamma PETG"]["note"], "gamma-note")
+        self.assertIn("Alpha PLA", downloaded_catalog)
+
+        status, body = call("/api/filaments/delete", {"name": "Alpha PLA"})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/filaments/delete", {"name": "Beta Nylon"})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/filaments/delete", {"name": "Gamma PETG"})
+        self.assertEqual(status, 400)
+        self.assertIn(b"cannot be emptied", body)
+
+        status, body = call("/api/restore", {"name": config_copy["name"], "where": "config"})
+        self.assertEqual(status, 200, body)
+        _, data = parsed(catalog.discover([self.home]))
+        self.assertIn("Alpha PLA", data)
+        self.assertIn("Gamma PETG", data)
+        self.assertNotIn("Generic Delta HF", data)
+
+        status, body = call("/api/restart", {})
+        self.assertEqual(status, 409)
+        if not Path("/bin/systemctl").exists():
+            status, body = call("/api/reboot", {})
+            self.assertEqual(status, 409)
+            self.assertIn(b"/bin/systemctl", body)
+        status, body = call("/api/filaments", {"name": "x"}, content_type="text/plain")
+        self.assertEqual(status, 400)
+
+        empty = Path(self.tmp.name) / "empty"
+        empty.mkdir()
+        missing = server.build_status(catalog.discover([empty]), [empty])
+        self.assertFalse(missing["found"])
+        self.assertIn("does not use that catalog", missing["message"])
+
+
+if __name__ == "__main__":
+    unittest.main()
