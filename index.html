@@ -105,6 +105,7 @@
       margin: 1.5rem 0 0.75rem;
       font-size: 1.125rem;
       font-weight: 500;
+      scroll-margin-top: calc(var(--appbar-height) + 0.75rem);
     }
 
     .lede, footer, .hint {
@@ -179,7 +180,9 @@
       margin: 1rem 0;
     }
 
-    .status-badges:has(> #busy-badge[hidden]) { grid-template-columns: minmax(0, 1fr); }
+    .status-badges:has(> #busy-badge[hidden]):has(> #free-badge[hidden]) {
+      grid-template-columns: minmax(0, 1fr);
+    }
 
     .status-badge {
       display: flex;
@@ -197,6 +200,11 @@
       border-color: rgba(255, 82, 82, 0.45);
     }
 
+    .status-badge-free {
+      background: rgba(76, 175, 80, 0.1);
+      border-color: rgba(76, 175, 80, 0.45);
+    }
+
     .status-badge-icon {
       flex: none;
       display: flex;
@@ -207,6 +215,7 @@
     }
 
     .status-badge-busy .status-badge-icon { color: var(--danger); }
+    .status-badge-free .status-badge-icon { color: var(--ok); }
 
     .status-badge-count {
       color: var(--accent);
@@ -414,6 +423,8 @@
     .form input, .form select { width: 100%; }
     .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
     .actions { display: flex; gap: 0.5rem; align-items: center; }
+    .id-row { display: flex; align-items: center; }
+    .id-row input { flex: 1; min-width: 0; }
 
     dialog {
       width: min(36rem, calc(100% - 2rem));
@@ -476,6 +487,15 @@
               <p id="busy-detail" class="status-badge-detail"></p>
             </div>
           </div>
+          <div id="free-badge" class="status-badge status-badge-free" role="status" hidden>
+            <span class="status-badge-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="40" height="40"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" fill="currentColor"/></svg>
+            </span>
+            <div class="status-badge-text">
+              <p id="free-title" class="status-badge-title"></p>
+              <p id="free-detail" class="status-badge-detail"></p>
+            </div>
+          </div>
           <div class="status-badge">
             <span id="catalog-count" class="status-badge-icon status-badge-count"></span>
             <div class="status-badge-text">
@@ -518,7 +538,7 @@
         </table>
       </div>
 
-      <h2>Add a material</h2>
+      <h2 id="add-heading">Add Material</h2>
       <form id="add-form" class="card form" autocomplete="off">
         <label class="wide">Copy from
           <select id="template" required></select>
@@ -529,11 +549,15 @@
         <label>Material
           <input id="add-material" required placeholder="PETG" autocomplete="off">
         </label>
+        <p id="add-preview" class="hint wide"></p>
         <label>Type
           <input id="add-type" required>
         </label>
         <label>ID
-          <input id="add-id" required placeholder="Unused ID">
+          <span class="id-row">
+            <input id="add-id" placeholder="Leave blank, or Generate">
+            <button id="generate-id" type="button" class="small" title="Next unused id after the material you copied">Generate</button>
+          </span>
         </label>
         <label>Nozzle minimum and maximum (°C)
           <span class="pair">
@@ -545,10 +569,8 @@
           <input id="add-chamber">
         </label>
         <div class="wide actions">
-          <button type="submit">Add material</button>
+          <button type="submit">Add Material</button>
         </div>
-        <p id="add-preview" class="hint wide"></p>
-        <p class="hint wide">Leave nozzle and chamber blank to keep the copied temperatures. The id has to be unused on this printer. Type is stored on the row. The load list does not use it.</p>
       </form>
       <datalist id="vendors"></datalist>
 
@@ -636,6 +658,10 @@
     const busyBadge = document.getElementById("busy-badge");
     const busyTitle = document.getElementById("busy-title");
     const busyDetail = document.getElementById("busy-detail");
+    const freeBadge = document.getElementById("free-badge");
+    const freeTitle = document.getElementById("free-title");
+    const freeDetail = document.getElementById("free-detail");
+    const IDLE_PRINT_STATES = ["standby", "complete", "cancelled", "error"];
     const catalogCount = document.getElementById("catalog-count");
     const catalogTitle = document.getElementById("catalog-title");
     const catalogPath = document.getElementById("catalog-path");
@@ -731,13 +757,13 @@
       const savedVendor = vendor.trim();
       const savedMaterial = material.trim();
       if (/\s/.test(savedVendor)) {
-        return "Vendor has to be a single word. The load list uses only the first word of the catalog name as the vendor.";
+        return "Vendor has to be a single word. The load menu uses only the first word of the name as the vendor.";
       }
       if (!savedVendor || !savedMaterial) {
-        return "Enter a vendor and a material. The catalog name is those two, separated by one space.";
+        return "Load menu shows these as two parts; after selection the filament line is both together.";
       }
       const name = savedVendor + " " + savedMaterial;
-      let text = "In the list: vendor " + savedVendor + ", filament " + savedMaterial + ". After selection: vendor " + savedVendor + ", filament " + name + ".";
+      let text = "Load menu: " + savedVendor + " + " + savedMaterial + ". After selection: " + name + ".";
       if (originalName && originalName !== name) {
         text += " Saving renames this to " + name + ".";
       }
@@ -761,7 +787,7 @@
       const vendor = document.getElementById(prefix + "-vendor").value.trim();
       const material = document.getElementById(prefix + "-material").value.trim();
       if (/\s/.test(vendor)) {
-        throw new Error("Vendor has to be a single word. The load list uses the first word of the name as the vendor.");
+        throw new Error("Vendor has to be a single word. The load menu uses only the first word of the name as the vendor.");
       }
       if (!vendor || !material) {
         throw new Error("Enter a vendor and a material.");
@@ -842,11 +868,21 @@
       rebootButton.title = status.reboot_block || "Reboots the whole printer.";
       menuToggle.disabled = busy;
       const block = status.apply_block || "";
+      const printState = status.print_state;
+      const printerFree = typeof printState === "string" && IDLE_PRINT_STATES.includes(printState);
+      const showBusy = Boolean(block);
+      const showFree = printerFree && !block;
       const split = block.indexOf(". ");
-      busyBadge.hidden = !block;
+      busyBadge.hidden = !showBusy;
       busyTitle.textContent = split === -1 ? block : block.slice(0, split + 1);
       busyDetail.textContent = split === -1 ? "" : block.slice(split + 2);
       busyDetail.hidden = split === -1;
+      freeBadge.hidden = !showFree;
+      if (showFree) {
+        freeTitle.textContent = "The printer is free.";
+        freeDetail.textContent = "Apply Changes and other actions are available.";
+        freeDetail.hidden = false;
+      }
     }
 
     // navigator.clipboard only exists on HTTPS or localhost; the printer serves plain HTTP.
@@ -940,6 +976,12 @@
         ];
         const actions = document.createElement("td");
         actions.className = "actions";
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "small secondary";
+        copy.textContent = "Copy";
+        copy.title = "Use this material as the template in Add Material";
+        copy.addEventListener("click", function () { copyToAdd(row); });
         const edit = document.createElement("button");
         edit.type = "button";
         edit.className = "small secondary";
@@ -954,7 +996,7 @@
           remove.title = "Selected on " + inUse.join(", ") + ". Choose another material for that slot on the touchscreen first.";
         }
         remove.addEventListener("click", function () { removeRow(row); });
-        actions.append(edit, remove);
+        actions.append(copy, edit, remove);
         cells.push(actions);
         tr.append(...cells);
         rowsBody.append(tr);
@@ -1021,6 +1063,45 @@
       document.getElementById("add-nozzle-max").value = row.nozzle_max == null ? "" : row.nozzle_max;
       document.getElementById("add-chamber").value = row.chamber;
     }
+
+    function copyToAdd(row) {
+      templateSelect.value = row.name;
+      fillFromTemplate();
+      document.getElementById("add-heading").scrollIntoView({ behavior: "smooth", block: "start" });
+      const materialInput = document.getElementById("add-material");
+      materialInput.focus({ preventScroll: true });
+      materialInput.select();
+    }
+
+    function nextFilamentId(sourceId) {
+      const used = new Set(materials.map(function (item) { return item.id; }).filter(Boolean));
+      const match = /^(.*?)(\d+)$/.exec(sourceId);
+      const prefix = match ? match[1] : sourceId;
+      const width = match ? match[2].length : 1;
+      let number = match ? parseInt(match[2], 10) : 0;
+      let candidate;
+      do {
+        number += 1;
+        candidate = prefix + String(number).padStart(width, "0");
+      } while (used.has(candidate));
+      return candidate;
+    }
+
+    function generateAddId() {
+      const row = materials.find(function (item) { return item.name === templateSelect.value; });
+      if (!row) throw new Error("Pick a material to copy from first.");
+      const id = nextFilamentId(row.id || "");
+      document.getElementById("add-id").value = id;
+      return id;
+    }
+
+    document.getElementById("generate-id").addEventListener("click", function () {
+      try {
+        generateAddId();
+      } catch (err) {
+        showError(err.message);
+      }
+    });
 
     function renderBackups(backups) {
       backupList.replaceChildren();
@@ -1178,6 +1259,7 @@
       if (busy) return;
       let payload;
       try {
+        if (!document.getElementById("add-id").value.trim()) generateAddId();
         payload = identityPayload("add");
         payload.template = templateSelect.value;
       } catch (err) {
