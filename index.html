@@ -1122,28 +1122,64 @@
       const thead = document.createElement("thead");
       thead.append(head);
       const tbody = document.createElement("tbody");
-      const whereLabel = { beside: "Beside the catalog", config: "printer_data/config" };
       for (const item of backups) {
+        const locations = item.locations || [];
+        const where = locations.includes("config") ? "config" : "beside";
         const tr = document.createElement("tr");
-        tr.append(textCell(new Date(item.modified * 1000).toLocaleString()));
-        tr.append(textCell(whereLabel[item.where] || item.where));
+        const when = textCell(new Date(item.modified * 1000).toLocaleString());
+        if (item.install) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "Install";
+          badge.title = "Made when the app was installed";
+          when.append(badge);
+        }
+        tr.append(when);
+        tr.append(textCell(backupWhereLabel(locations)));
         tr.append(textCell(item.size < 1024 ? item.size + " B" : (item.size / 1024).toFixed(1) + " KB"));
         const actions = document.createElement("td");
         actions.className = "actions";
-        const download = document.createElement("a");
-        download.href = "/api/backups/" + encodeURIComponent(item.name) + "?where=" + encodeURIComponent(item.where);
+        const download = document.createElement("button");
+        download.type = "button";
+        download.className = "small secondary";
         download.textContent = "Download";
+        download.addEventListener("click", function () {
+          const link = document.createElement("a");
+          link.href = "/api/backups/" + encodeURIComponent(item.name) + "?where=" + encodeURIComponent(where);
+          link.download = item.name;
+          document.body.append(link);
+          link.click();
+          link.remove();
+        });
         const restore = document.createElement("button");
         restore.type = "button";
         restore.className = "small secondary";
         restore.textContent = "Restore";
-        restore.addEventListener("click", function () { restoreBackup(item); });
-        actions.append(download, restore);
+        restore.addEventListener("click", function () { restoreBackup(item, where); });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "small secondary danger";
+        remove.textContent = "Delete";
+        if (item.install) {
+          remove.disabled = true;
+          remove.title = "This backup was made when the app was installed. It is kept.";
+        }
+        remove.addEventListener("click", function () { deleteBackup(item); });
+        actions.append(download, restore, remove);
         tr.append(actions);
         tbody.append(tr);
       }
       table.append(thead, tbody);
       backupList.append(table);
+    }
+
+    function backupWhereLabel(locations) {
+      const beside = locations.includes("beside");
+      const config = locations.includes("config");
+      if (beside && config) return "Beside the catalog, and in printer_data/config";
+      if (beside) return "Beside the catalog";
+      if (config) return "printer_data/config";
+      return "";
     }
 
     async function reload() {
@@ -1232,18 +1268,39 @@
       }
     }
 
-    async function restoreBackup(item) {
+    async function restoreBackup(item, where) {
       if (busy) return;
-      const where = item.where === "config" ? "the printer_data/config copy" : "the copy beside the catalog";
       const confirmed = await ask(
         "Restore this backup?",
-        "Restore " + item.name + " from " + where + "? The current catalog is backed up first.",
+        "Restore " + item.name + "? The current catalog is backed up first.",
         "Restore"
       );
       if (!confirmed) return;
       busy = true;
       try {
-        const result = await api("/api/restore", { name: item.name, where: item.where });
+        const result = await api("/api/restore", { name: item.name, where: where });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    async function deleteBackup(item) {
+      if (busy) return;
+      const copies = (item.locations || []).length > 1 ? " Both copies are removed." : "";
+      const confirmed = await ask(
+        "Delete this backup?",
+        "Delete " + item.name + "?" + copies + " This cannot be undone.",
+        "Delete"
+      );
+      if (!confirmed) return;
+      busy = true;
+      try {
+        const result = await api("/api/backups/delete", { name: item.name });
         showNotice(result.message);
         await reload();
       } catch (err) {

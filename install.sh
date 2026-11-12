@@ -104,6 +104,25 @@ local_install() {
   chown -R "$owner:$group" "$app_dir"
   chmod 0755 "$app_dir" "$app_dir/state"
 
+  if ! sudo -u "$owner" -H env PYTHONPATH="$app_dir" "$python_bin" -c 'import catalog, sys
+layout = catalog.discover()
+if layout is None:
+    sys.stderr.write(catalog.missing_catalog_message() + "\n")
+    sys.exit(1)
+try:
+    name, created = catalog.ensure_install_backup(layout)
+except catalog.CatalogError as exc:
+    sys.stderr.write(str(exc) + "\n")
+    sys.exit(1)
+if created:
+    print(f"Backed up the catalog as {name}, beside it and in printer_data/config.")
+else:
+    print(f"The install backup {name} is already there.")
+'; then
+    echo "Could not back up the catalog, so the install stopped." >&2
+    exit 1
+  fi
+
   tmp=$(mktemp)
   sed \
     -e "s|__USER__|${owner}|g" \

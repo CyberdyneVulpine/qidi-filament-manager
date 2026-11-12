@@ -32,6 +32,7 @@ CATALOG_RELATIVE = Path("QIDI_Client/resource/filament_config/filament-0.4.json"
 CONFIG_RELATIVE = Path("printer_data/config")
 STATE_RELATIVE = Path("filament-manager/state")
 BASELINE_NAME = "original-ids.json"
+INSTALL_BACKUP_NAME = "install-backup.json"
 BACKUP_NAME = re.compile(r"^filament-0\.4\.json\.bak-[0-9]{8}_[0-9]{6}(?:-[0-9]+)?$")
 NOZZLE_PATTERN = re.compile(
     r'("nozzle_temperature": \[\s*)(-?\d+(?:\.\d+)?)(\s*,\s*)(-?\d+(?:\.\d+)?)(\s*\])'
@@ -773,27 +774,93 @@ def delete_filament(layout, name):
         )
 
 
-def list_backups(layout):
-    rows = []
-    folders = (
+def install_backup_name(layout):
+    path = layout.state_dir / INSTALL_BACKUP_NAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    name = data.get("name") if isinstance(data, dict) else None
+    if not isinstance(name, str) or BACKUP_NAME.match(name) is None:
+        return None
+    return name
+
+
+def ensure_install_backup(layout):
+    """Back up the catalog once, on first install, and remember that backup's name."""
+    existing = install_backup_name(layout)
+    if existing is not None and any((folder / existing).is_file() for _where, folder in _backup_folders(layout)):
+        return existing, False
+    saved = create_backup(layout)
+    name = saved.config_copy.name
+    payload = json.dumps({"name": name}, indent=2) + "\n"
+    try:
+        layout.state_dir.mkdir(parents=True, exist_ok=True)
+        (layout.state_dir / INSTALL_BACKUP_NAME).write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        raise CatalogError(f"could not record the install backup: {exc}") from exc
+    return name, True
+
+
+def _backup_folders(layout):
+    return (
         ("beside", layout.catalog.parent),
         ("config", layout.config_dir),
     )
-    for where, folder in folders:
+
+
+def list_backups(layout):
+    protected = install_backup_name(layout)
+    rows = {}
+    for where, folder in _backup_folders(layout):
         if not folder.is_dir():
             continue
         for path in folder.iterdir():
             if not path.is_file() or not BACKUP_NAME.match(path.name):
                 continue
             stat = path.stat()
-            rows.append({
-                "name": path.name,
-                "where": where,
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-            })
-    rows.sort(key=lambda row: (row["modified"], row["where"], row["name"]), reverse=True)
-    return rows
+            row = rows.get(path.name)
+            if row is None:
+                rows[path.name] = {
+                    "name": path.name,
+                    "locations": [where],
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                    "install": path.name == protected,
+                }
+                continue
+            row["locations"].append(where)
+            if stat.st_mtime > row["modified"]:
+                row["size"] = stat.st_size
+                row["modified"] = stat.st_mtime
+    ordered = list(rows.values())
+    ordered.sort(key=lambda row: (row["modified"], row["name"]), reverse=True)
+    return ordered
+
+
+def delete_backup(layout, name):
+    if not isinstance(name, str) or BACKUP_NAME.match(name) is None:
+        raise CatalogError("unknown backup")
+    if name == install_backup_name(layout):
+        raise CatalogError("This is the backup made when the app was installed. It cannot be deleted.")
+    with _file_lock(layout):
+        removed = 0
+        for where, _folder in _backup_folders(layout):
+            try:
+                path = resolve_backup(layout, name, where)
+            except CatalogError:
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise CatalogError(f"could not delete the backup: {exc}") from exc
+            removed += 1
+        if not removed:
+            raise CatalogError("backup not found")
+    return ChangeResult(
+        changed=True,
+        message=f"Deleted {name}." if removed == 1 else f"Deleted both copies of {name}.",
+    )
 
 
 def resolve_backup(layout, name, where):

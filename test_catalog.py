@@ -282,9 +282,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(saved.config_copy.read_bytes(), original)
         catalog.delete_filament(layout, "Gamma PETG")
         self.assertNotIn(b"gamma-note", layout.catalog.read_bytes())
-        config_copies = [row for row in catalog.list_backups(layout) if row["where"] == "config"]
-        self.assertGreaterEqual(len(config_copies), 1)
-        manual = next(row for row in config_copies if row["name"] == saved.config_copy.name)
+        listed = catalog.list_backups(layout)
+        manual = next(row for row in listed if row["name"] == saved.config_copy.name)
+        self.assertEqual(manual["locations"], ["beside", "config"])
+        self.assertEqual(len([row for row in listed if row["name"] == manual["name"]]), 1)
         restored = catalog.restore_backup(layout, manual["name"], "config")
         self.assertTrue(restored.changed)
         self.assertEqual(layout.catalog.read_bytes(), original)
@@ -296,6 +297,47 @@ class CatalogTests(unittest.TestCase):
             catalog.resolve_backup(layout, "filament-0.4.json", "beside")
         with self.assertRaises(catalog.CatalogError):
             catalog.add_filament(layout, "Alpha PLA", 'Bad "Name', "PLA", "QFA91", "Generic")
+
+    def test_delete_backup_removes_both_copies(self):
+        layout = self.layout()
+        saved = catalog.create_backup(layout)
+        name = saved.config_copy.name
+        deleted = catalog.delete_backup(layout, name)
+        self.assertTrue(deleted.changed)
+        self.assertFalse(saved.beside.exists())
+        self.assertFalse(saved.config_copy.exists())
+        self.assertNotIn(name, [row["name"] for row in catalog.list_backups(layout)])
+        with self.assertRaises(catalog.CatalogError):
+            catalog.delete_backup(layout, name)
+        with self.assertRaises(catalog.CatalogError):
+            catalog.delete_backup(layout, "../filament-0.4.json.bak-20260101_000000")
+
+        orphan = catalog.create_backup(layout)
+        orphan.beside.unlink()
+        listed = next(row for row in catalog.list_backups(layout) if row["name"] == orphan.config_copy.name)
+        self.assertEqual(listed["locations"], ["config"])
+        catalog.delete_backup(layout, orphan.config_copy.name)
+        self.assertFalse(orphan.config_copy.exists())
+
+    def test_install_backup_is_made_once_and_kept(self):
+        layout = self.layout()
+        name, created = catalog.ensure_install_backup(layout)
+        self.assertTrue(created)
+        again, created_again = catalog.ensure_install_backup(layout)
+        self.assertEqual(again, name)
+        self.assertFalse(created_again)
+        self.assertEqual(len([row for row in catalog.list_backups(layout) if row["install"]]), 1)
+        with self.assertRaises(catalog.CatalogError):
+            catalog.delete_backup(layout, name)
+        self.assertTrue((layout.config_dir / name).is_file())
+
+        (layout.config_dir / name).unlink()
+        (layout.catalog.parent / name).unlink()
+        replaced, created_replacement = catalog.ensure_install_backup(layout)
+        self.assertTrue(created_replacement)
+        self.assertTrue((layout.config_dir / replaced).is_file())
+        self.assertTrue((layout.catalog.parent / replaced).is_file())
+        self.assertEqual(catalog.install_backup_name(layout), replaced)
 
     def write_saved_variables(self, layout, external="'QFN05'"):
         layout.config_dir.mkdir(parents=True, exist_ok=True)
@@ -632,8 +674,8 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         status, body = call("/api/backups")
         backups = json.loads(body)["backups"]
-        self.assertTrue(any(row["where"] == "config" for row in backups))
-        config_copy = next(row for row in backups if row["where"] == "config")
+        self.assertTrue(any("config" in row["locations"] for row in backups))
+        config_copy = next(row for row in backups if "config" in row["locations"])
         status, downloaded = call("/api/backups/" + config_copy["name"] + "?where=config")
         self.assertEqual(status, 200)
         downloaded_catalog = json.loads(downloaded)
@@ -654,6 +696,14 @@ class ServerTests(unittest.TestCase):
         self.assertIn("Alpha PLA", data)
         self.assertIn("Gamma PETG", data)
         self.assertNotIn("Generic Delta HF", data)
+
+        status, body = call("/api/backups/delete", {"name": config_copy["name"]})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/backups")
+        names = [row["name"] for row in json.loads(body)["backups"]]
+        self.assertNotIn(config_copy["name"], names)
+        status, body = call("/api/backups/delete", {"name": config_copy["name"]})
+        self.assertEqual(status, 400)
 
         status, body = call("/api/restart", {})
         self.assertEqual(status, 409)

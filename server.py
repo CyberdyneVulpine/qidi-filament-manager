@@ -660,6 +660,12 @@ class Handler(BaseHTTPRequestHandler):
             result = self._mutate(catalog.create_backup)
             self.send_json(200, result)
             return
+        if path == "/api/backups/delete":
+            body = self.read_json()
+            name = body.get("name")
+            result = self._mutate(lambda layout: catalog.delete_backup(layout, name))
+            self.send_json(200, result)
+            return
         if path == "/api/restore":
             body = self.read_json()
             name = body.get("name")
