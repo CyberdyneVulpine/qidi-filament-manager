@@ -45,9 +45,14 @@ NOZZLE_PATTERN = re.compile(
 SAVED_VARIABLES_NAME = "saved_variables.cfg"
 SLOT_PATTERN = re.compile(r"^filament_slot(\d+)\s*=\s*(.+?)\s*$")
 EXTERNAL_SLOT = 16
-# multi_color_controller's DEFAULT_RFID_FILAMENT_ID. LOAD_FILAMENT_CONTROL looks
-# it up next to the slot's id, so Klipper shuts down when it is not in the catalog.
-FIRMWARE_DEFAULT_ID = "QFA00"
+# QFA00 is multi_color_controller's DEFAULT_RFID_FILAMENT_ID. LOAD_FILAMENT_CONTROL
+# looks it up next to the slot's id, so Klipper shuts down when it is not in the
+# catalog. QFA02 is what LEGACY_RFID_FILAMENT_ID_MAP gives for 1, the value box
+# slots hold until a material is chosen.
+FIRMWARE_DEFAULT_IDS = {
+    "QFA00": "the default material in Klipper's filament code",
+    "QFA02": "the material Klipper's filament code assumes for box slots that were never set",
+}
 
 
 class CatalogError(Exception):
@@ -290,21 +295,24 @@ def _require_not_in_use(slots, filament_id, name, action):
 
 
 def _require_not_firmware_default(filament_id, name, action):
-    if filament_id != FIRMWARE_DEFAULT_ID:
+    reason = FIRMWARE_DEFAULT_IDS.get(filament_id)
+    if reason is None:
         return
     raise CatalogError(
-        f"{name} ({filament_id}) is the default material in Klipper's filament code. "
+        f"{name} ({filament_id}) is {reason}. "
         f"Loading filament shuts Klipper down when that id is not in the catalog, so you cannot {action}."
     )
 
 
 def _require_firmware_default(data, label):
-    if FIRMWARE_DEFAULT_ID in _ids_in(data):
-        return
-    raise CatalogError(
-        f"{label} has no entry for {FIRMWARE_DEFAULT_ID}, the default material in Klipper's filament code. "
-        "Loading filament shuts Klipper down without it. Unhide or restore that entry first."
-    )
+    present = _ids_in(data)
+    for filament_id, reason in FIRMWARE_DEFAULT_IDS.items():
+        if filament_id in present:
+            continue
+        raise CatalogError(
+            f"{label} has no entry for {filament_id}, {reason}. "
+            "Loading filament shuts Klipper down without it. Unhide or restore that entry first."
+        )
 
 
 def ensure_baseline(layout, data):
@@ -375,7 +383,7 @@ def public_row(name, entry, baseline, slots=None, hidden=False):
         "chamber": _chamber_text(entry),
         "added_here": _added_here(entry, baseline),
         "in_use": [slot_label(number) for number in numbers],
-        "required": filament_id == FIRMWARE_DEFAULT_ID,
+        "required": filament_id in FIRMWARE_DEFAULT_IDS,
         "hidden": hidden,
     }
 

@@ -29,6 +29,13 @@ SAMPLE = """\
     "chamber_temperatures": "0",
     "nozzle_temperature": [190, 220]
   },
+  "QIDI PLA Rapido": {
+    "type": "PLA",
+    "filament_id": "QFA02",
+    "filament_vendor": "QIDI",
+    "chamber_temperatures": "0",
+    "nozzle_temperature": [190, 230]
+  },
   "Alpha PLA": {
     "type": "PLA",
     "filament_id": "QFA01",
@@ -132,8 +139,8 @@ class CatalogTests(unittest.TestCase):
             "Generic",
         )
         self.assertTrue(result.changed)
-        self.assertEqual(result.before_count, 4)
-        self.assertEqual(result.after_count, 5)
+        self.assertEqual(result.before_count, 5)
+        self.assertEqual(result.after_count, 6)
         text, data = parsed(layout)
         self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
         self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
@@ -255,20 +262,21 @@ class CatalogTests(unittest.TestCase):
 
         catalog.delete_filament(layout, "Gamma PETG")
         text, data = parsed(layout)
-        self.assertEqual(list(data), ["QIDI PLA Basic", "Generic Beta HF"])
+        self.assertEqual(list(data), ["QIDI PLA Basic", "QIDI PLA Rapido", "Generic Beta HF"])
         self.assertNotRegex(text, r",\s*\}")
         catalog.delete_filament(layout, "Generic Beta HF")
+        self.assertNotRegex(parsed(layout)[0], r",\s*\}")
         with self.assertRaises(catalog.CatalogError) as ctx:
-            catalog.delete_filament(layout, "QIDI PLA Basic")
-        self.assertIn("cannot be emptied", str(ctx.exception))
-        self.assertEqual(list(parsed(layout)[1]), ["QIDI PLA Basic"])
+            catalog.delete_filament(layout, "QIDI PLA Rapido")
+        self.assertIn("box slots that were never set", str(ctx.exception))
+        self.assertEqual(list(parsed(layout)[1]), ["QIDI PLA Basic", "QIDI PLA Rapido"])
 
     def test_delete_middle_entry(self):
         layout = self.layout()
         _, before = parsed(layout)
         catalog.delete_filament(layout, "Beta Nylon")
         text, data = parsed(layout)
-        self.assertEqual(set(data), {"QIDI PLA Basic", "Alpha PLA", "Gamma PETG"})
+        self.assertEqual(set(data), {"QIDI PLA Basic", "QIDI PLA Rapido", "Alpha PLA", "Gamma PETG"})
         self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
         self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
         self.assertNotIn("beta-note", text)
@@ -461,7 +469,11 @@ class CatalogTests(unittest.TestCase):
         original = layout.catalog.read_bytes()
         rows = {row["name"]: row for row in catalog.filament_rows(layout)["filaments"]}
         self.assertTrue(rows["QIDI PLA Basic"]["required"])
+        self.assertTrue(rows["QIDI PLA Rapido"]["required"])
         self.assertFalse(rows["Alpha PLA"]["required"])
+        with self.assertRaises(catalog.CatalogError) as rapido:
+            catalog.hide_filament(layout, "QIDI PLA Rapido")
+        self.assertIn("QFA02", str(rapido.exception))
         for attempt, action in (
             (lambda: catalog.hide_filament(layout, "QIDI PLA Basic"), "hide it"),
             (lambda: catalog.delete_filament(layout, "QIDI PLA Basic"), "remove it"),
@@ -479,11 +491,11 @@ class CatalogTests(unittest.TestCase):
         catalog.delete_filament(lacking, "Other")
         with self.assertRaises(catalog.CatalogError) as applied:
             catalog.apply_staged(lacking)
-        self.assertIn(catalog.FIRMWARE_DEFAULT_ID, str(applied.exception))
+        self.assertIn("QFA00", str(applied.exception))
         self.assertTrue(catalog.has_staged_changes(lacking))
         with self.assertRaises(catalog.CatalogError) as restored:
             catalog.restore_backup(lacking, saved.config_copy.name, "config")
-        self.assertIn(catalog.FIRMWARE_DEFAULT_ID, str(restored.exception))
+        self.assertIn("QFA00", str(restored.exception))
 
     def test_restore_keeps_ids_that_slots_use(self):
         layout = self.layout()
@@ -514,8 +526,8 @@ class CatalogTests(unittest.TestCase):
         before_text, before = parsed(layout)
         result = catalog.hide_filament(layout, "Beta Nylon")
         self.assertTrue(result.changed)
-        self.assertEqual(result.before_count, 4)
-        self.assertEqual(result.after_count, 3)
+        self.assertEqual(result.before_count, 5)
+        self.assertEqual(result.after_count, 4)
         self.assertIsNone(result.beside)
         self.assertEqual(layout.catalog.read_bytes(), original)
         self.assertEqual(list(layout.catalog.parent.glob("filament-0.4.json.bak-*")), [])
@@ -533,7 +545,7 @@ class CatalogTests(unittest.TestCase):
             expected = expected[:-1]
         self.assertEqual(self.hidden_blocks(layout)["Beta Nylon"], expected)
         listed = catalog.filament_rows(layout)
-        self.assertEqual(listed["count"], 3)
+        self.assertEqual(listed["count"], 4)
         hidden_rows = [row for row in listed["filaments"] if row["hidden"]]
         self.assertEqual([row["name"] for row in hidden_rows], ["Beta Nylon"])
         self.assertEqual(hidden_rows[0]["id"], "QFN05")
@@ -905,7 +917,7 @@ class ServerTests(unittest.TestCase):
 
         status, body = call("/api/filaments")
         filaments = json.loads(body)
-        self.assertEqual(filaments["count"], 4)
+        self.assertEqual(filaments["count"], 5)
         self.assertTrue(all(not row["added_here"] for row in filaments["filaments"]))
 
         status, body = call("/api/filaments", {
@@ -959,14 +971,14 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["changed"])
         status, body = call("/api/filaments")
         hidden_list = json.loads(body)
-        self.assertEqual(hidden_list["count"], 3)
+        self.assertEqual(hidden_list["count"], 4)
         hidden = [row for row in hidden_list["filaments"] if row["hidden"]]
         self.assertEqual([row["name"] for row in hidden], ["Gamma PETG"])
         status, body = call("/api/filaments/unhide", {"name": "Gamma PETG"})
         self.assertEqual(status, 200, body)
         status, body = call("/api/filaments")
         restored = json.loads(body)
-        self.assertEqual(restored["count"], 4)
+        self.assertEqual(restored["count"], 5)
         self.assertTrue(all(not row["hidden"] for row in restored["filaments"]))
         status, body = call("/api/filaments/hide", {"name": "Gamma PETG"})
         self.assertEqual(status, 200, body)
@@ -975,13 +987,13 @@ class ServerTests(unittest.TestCase):
         self.assertIn(b"unchanged", body)
         status, body = call("/api/filaments")
         after_delete = json.loads(body)
-        self.assertEqual(after_delete["count"], 3)
+        self.assertEqual(after_delete["count"], 4)
         self.assertFalse(any(row["name"] == "Gamma PETG" for row in after_delete["filaments"]))
         status, body = call("/api/restore", {"name": config_copy["name"], "where": "config"})
         self.assertEqual(status, 200, body)
         status, body = call("/api/filaments")
         brought_back = json.loads(body)
-        self.assertEqual(brought_back["count"], 4)
+        self.assertEqual(brought_back["count"], 5)
         self.assertTrue(any(row["name"] == "Gamma PETG" and not row["hidden"] for row in brought_back["filaments"]))
 
         status, body = call("/api/filaments/delete", {"name": "Alpha PLA"})
@@ -992,7 +1004,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(status, 200, body)
         status, body = call("/api/filaments/delete", {"name": "QIDI PLA Basic"})
         self.assertEqual(status, 400)
-        self.assertIn(b"cannot be emptied", body)
+        self.assertIn(b"default material", body)
 
         status, body = call("/api/restore", {"name": config_copy["name"], "where": "config"})
         self.assertEqual(status, 200, body)
