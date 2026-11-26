@@ -285,6 +285,9 @@ class CatalogTests(unittest.TestCase):
         listed = catalog.list_backups(layout)
         manual = next(row for row in listed if row["name"] == saved.config_copy.name)
         self.assertEqual(manual["locations"], ["beside", "config"])
+        self.assertEqual(len(manual["paths"]), 2)
+        self.assertTrue(all(manual["name"] in path for path in manual["paths"]))
+        self.assertEqual(manual["what"], "No filament changes")
         self.assertEqual(len([row for row in listed if row["name"] == manual["name"]]), 1)
         restored = catalog.restore_backup(layout, manual["name"], "config")
         self.assertTrue(restored.changed)
@@ -316,6 +319,8 @@ class CatalogTests(unittest.TestCase):
         orphan.beside.unlink()
         listed = next(row for row in catalog.list_backups(layout) if row["name"] == orphan.config_copy.name)
         self.assertEqual(listed["locations"], ["config"])
+        self.assertEqual(len(listed["paths"]), 1)
+        self.assertTrue(listed["paths"][0].endswith(orphan.config_copy.name))
         catalog.delete_backup(layout, orphan.config_copy.name)
         self.assertFalse(orphan.config_copy.exists())
 
@@ -338,6 +343,42 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue((layout.config_dir / replaced).is_file())
         self.assertTrue((layout.catalog.parent / replaced).is_file())
         self.assertEqual(catalog.install_backup_name(layout), replaced)
+
+    def test_backup_what_describes_the_following_change(self):
+        alpha = {"filament_vendor": "QIDI"}
+        beta = {"filament_vendor": "QIDI"}
+        gamma = {"filament_vendor": "Generic"}
+        self.assertEqual(catalog._change_summary({"Alpha PLA": alpha}, {"Alpha PLA": alpha}), "No filament changes")
+        self.assertEqual(catalog._change_summary({}, {"QIDI PLA": alpha}), "Added QIDI PLA")
+        self.assertEqual(
+            catalog._change_summary({"Alpha PLA": alpha}, {"Alpha PLA": alpha, "Beta Nylon": beta}),
+            "Added QIDI Beta Nylon",
+        )
+        self.assertEqual(
+            catalog._change_summary({"Gamma PETG": gamma, "Alpha PLA": alpha}, {"Alpha PLA": alpha}),
+            "Removed Generic Gamma PETG",
+        )
+        self.assertEqual(
+            catalog._change_summary({"A": alpha}, {"A": alpha, "B": beta, "C": gamma}),
+            "Added 2 filaments",
+        )
+        self.assertEqual(
+            catalog._change_summary({"A": alpha, "B": beta, "C": gamma}, {"A": alpha}),
+            "Removed 2 filaments",
+        )
+        self.assertEqual(
+            catalog._change_summary(
+                {"A": alpha, "B": beta},
+                {"A": alpha, "C": gamma, "D": alpha, "E": alpha},
+            ),
+            "+3, -1 filaments",
+        )
+        self.assertEqual(catalog._change_summary(None, {"A": alpha}), "Unreadable")
+
+        layout = self.layout()
+        catalog.delete_filament(layout, "Gamma PETG")
+        newest = catalog.list_backups(layout)[0]
+        self.assertEqual(newest["what"], "Removed Generic Gamma PETG")
 
     def write_saved_variables(self, layout, external="'QFN05'"):
         layout.config_dir.mkdir(parents=True, exist_ok=True)
@@ -396,6 +437,162 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(catalog.CatalogError) as ctx:
             catalog.ensure_untouched(original, updated, {"A"})
         self.assertIn("B", str(ctx.exception))
+
+    def hidden_blocks(self, layout):
+        return json.loads((layout.state_dir / catalog.HIDDEN_NAME).read_text(encoding="utf-8"))
+
+    def test_hide_preserves_neighbors_and_unhide_restores_text(self):
+        layout = self.layout()
+        original = layout.catalog.read_bytes()
+        before_text, before = parsed(layout)
+        result = catalog.hide_filament(layout, "Beta Nylon")
+        self.assertTrue(result.changed)
+        self.assertEqual(result.before_count, 3)
+        self.assertEqual(result.after_count, 2)
+        self.assertIn(b"beta-note", result.beside.read_bytes())
+        text, data = parsed(layout)
+        self.assertNotIn("Beta Nylon", data)
+        self.assertEqual(data["Alpha PLA"], before["Alpha PLA"])
+        self.assertEqual(data["Gamma PETG"], before["Gamma PETG"])
+        self.assertIn("alpha } note", text)
+        self.assertIn("gamma-note", text)
+        self.assertNotIn("beta-note", text)
+        self.assertNotRegex(text, r",\s*\}")
+        start, end = catalog.object_span(before_text, "Beta Nylon")
+        expected = before_text[start:end]
+        if expected.endswith(","):
+            expected = expected[:-1]
+        self.assertEqual(self.hidden_blocks(layout)["Beta Nylon"], expected)
+        listed = catalog.filament_rows(layout)
+        self.assertEqual(listed["count"], 2)
+        hidden_rows = [row for row in listed["filaments"] if row["hidden"]]
+        self.assertEqual([row["name"] for row in hidden_rows], ["Beta Nylon"])
+        self.assertEqual(hidden_rows[0]["id"], "QFN05")
+        self.assertTrue(all(not row["hidden"] for row in listed["filaments"] if row["name"] != "Beta Nylon"))
+
+        catalog.unhide_filament(layout, "Beta Nylon")
+        self.assertEqual(parsed(layout)[1], before)
+        self.assertEqual(self.hidden_blocks(layout), {})
+
+        fresh = self.layout()
+        fresh_bytes = fresh.catalog.read_bytes()
+        catalog.hide_filament(fresh, "Gamma PETG")
+        catalog.unhide_filament(fresh, "Gamma PETG")
+        self.assertEqual(fresh.catalog.read_bytes(), fresh_bytes)
+        self.assertEqual(self.hidden_blocks(fresh), {})
+
+    def test_hide_refuses_the_last_entry_and_a_slot_in_use(self):
+        layout = self.layout()
+        catalog.hide_filament(layout, "Alpha PLA")
+        catalog.hide_filament(layout, "Beta Nylon")
+        with self.assertRaises(catalog.CatalogError) as emptied:
+            catalog.hide_filament(layout, "Gamma PETG")
+        self.assertIn("cannot be emptied", str(emptied.exception))
+        self.assertIn("Gamma PETG", parsed(layout)[1])
+        self.assertNotIn("Gamma PETG", self.hidden_blocks(layout))
+
+        busy_home = self.make_home("mks")
+        busy = catalog.discover([busy_home])
+        self.write_saved_variables(busy)
+        before = busy.catalog.read_bytes()
+        with self.assertRaises(catalog.CatalogError) as hidden:
+            catalog.hide_filament(busy, "Beta Nylon")
+        self.assertIn("hide it", str(hidden.exception))
+        self.assertIn("external spool", str(hidden.exception))
+        self.assertEqual(busy.catalog.read_bytes(), before)
+        self.assertFalse((busy.state_dir / catalog.HIDDEN_NAME).is_file())
+
+    def test_hidden_ids_and_names_block_add_update_and_unhide(self):
+        layout = self.layout()
+        catalog.hide_filament(layout, "Beta Nylon")
+        with self.assertRaises(catalog.CatalogError) as added:
+            catalog.add_filament(layout, "Alpha PLA", "Generic Beta Copy", "NYLON", "QFN05", "Generic")
+        self.assertIn("QFN05", str(added.exception))
+        self.assertIn("hidden", str(added.exception))
+        with self.assertRaises(catalog.CatalogError) as renamed:
+            catalog.update_filament(layout, "Alpha PLA", "QIDI Alpha PLA", "PLA", "QFN05", "QIDI")
+        self.assertIn("hidden", str(renamed.exception))
+        with self.assertRaises(catalog.CatalogError) as same_name:
+            catalog.add_filament(layout, "Alpha PLA", "Beta Nylon", "NYLON", "QFN90", "Beta")
+        self.assertIn("Unhide it", str(same_name.exception))
+        with self.assertRaises(catalog.CatalogError) as taken_name:
+            catalog.update_filament(layout, "Alpha PLA", "Beta Nylon", "PLA", "QFA01", "Beta")
+        self.assertIn("Unhide it", str(taken_name.exception))
+        self.assertNotIn("Generic Beta Copy", parsed(layout)[1])
+
+        copied = catalog.add_filament(layout, "Beta Nylon", "Generic Beta Copy", "NYLON", "QFN90", "Generic")
+        self.assertTrue(copied.changed)
+        data = parsed(layout)[1]
+        self.assertEqual(data["Generic Beta Copy"]["note"], "beta-note")
+        self.assertEqual(data["Generic Beta Copy"]["filament_id"], "QFN90")
+        self.assertNotIn("Beta Nylon", data)
+        rows = {row["name"]: row for row in catalog.filament_rows(layout)["filaments"]}
+        self.assertTrue(rows["Beta Nylon"]["hidden"])
+
+        text = layout.catalog.read_text(encoding="utf-8")
+        layout.catalog.write_text(text.replace('"filament_id": "QFA01"', '"filament_id": "QFN05"'), encoding="utf-8")
+        with self.assertRaises(catalog.CatalogError) as unhide:
+            catalog.unhide_filament(layout, "Beta Nylon")
+        self.assertIn("QFN05", str(unhide.exception))
+        self.assertNotIn("Beta Nylon", parsed(layout)[1])
+        self.assertIn("Beta Nylon", self.hidden_blocks(layout))
+
+    def test_catalog_wins_when_a_hidden_name_returns(self):
+        layout = self.layout()
+        original = layout.catalog.read_bytes()
+        catalog.hide_filament(layout, "Gamma PETG")
+        catalog.hide_filament(layout, "Beta Nylon")
+        layout.catalog.write_bytes(original)
+        listed = catalog.filament_rows(layout)
+        names = [row["name"] for row in listed["filaments"]]
+        self.assertEqual(names.count("Gamma PETG"), 1)
+        self.assertEqual(names.count("Beta Nylon"), 1)
+        self.assertTrue(all(not row["hidden"] for row in listed["filaments"]))
+        self.assertEqual(self.hidden_blocks(layout), {})
+        self.assertEqual(layout.catalog.read_bytes(), original)
+
+        catalog.hide_filament(layout, "Gamma PETG")
+        layout.catalog.write_bytes(original)
+        with self.assertRaises(catalog.CatalogError) as ctx:
+            catalog.unhide_filament(layout, "Gamma PETG")
+        self.assertIn("already in the catalog", str(ctx.exception))
+        self.assertIn("Gamma PETG", parsed(layout)[1])
+        self.assertNotIn("Gamma PETG", self.hidden_blocks(layout))
+
+    def test_delete_hidden_leaves_the_catalog(self):
+        layout = self.layout()
+        catalog.hide_filament(layout, "Gamma PETG")
+        catalog_bytes = layout.catalog.read_bytes()
+        result = catalog.delete_hidden_filament(layout, "Gamma PETG")
+        self.assertTrue(result.changed)
+        self.assertIn("unchanged", result.message)
+        self.assertEqual(layout.catalog.read_bytes(), catalog_bytes)
+        self.assertEqual(result.beside, None)
+        with self.assertRaises(catalog.CatalogError) as ctx:
+            catalog.unhide_filament(layout, "Gamma PETG")
+        self.assertIn("not found", str(ctx.exception))
+        self.assertEqual(layout.catalog.read_bytes(), catalog_bytes)
+
+    def test_failed_hide_restores_the_parked_file(self):
+        layout = self.layout()
+        catalog.hide_filament(layout, "Alpha PLA")
+        parked = (layout.state_dir / catalog.HIDDEN_NAME).read_bytes()
+        catalog_bytes = layout.catalog.read_bytes()
+        original_commit = catalog._commit
+
+        def boom(layout, updated_text, updated):
+            raise catalog.CatalogError("disk full")
+
+        catalog._commit = boom
+        try:
+            with self.assertRaises(catalog.CatalogError) as ctx:
+                catalog.hide_filament(layout, "Beta Nylon")
+            self.assertIn("disk full", str(ctx.exception))
+        finally:
+            catalog._commit = original_commit
+        self.assertEqual(layout.catalog.read_bytes(), catalog_bytes)
+        self.assertEqual((layout.state_dir / catalog.HIDDEN_NAME).read_bytes(), parked)
+        self.assertNotIn("Beta Nylon", json.loads(parked))
 
 
 class ServerTests(unittest.TestCase):
@@ -619,6 +816,8 @@ class ServerTests(unittest.TestCase):
         self.assertIn(b"Filament Manager", page)
         self.assertIn(b"Reboot printer", page)
         self.assertIn(b"Apply Changes", page)
+        self.assertIn(b"Show hidden", page)
+        self.assertIn(b"Unhide", page)
         self.assertIn(b"The whole printer reboots, including Klipper.", page)
         self.assertIn(b"add-material", page)
 
@@ -681,6 +880,36 @@ class ServerTests(unittest.TestCase):
         downloaded_catalog = json.loads(downloaded)
         self.assertEqual(downloaded_catalog["Gamma PETG"]["note"], "gamma-note")
         self.assertIn("Alpha PLA", downloaded_catalog)
+
+        status, body = call("/api/filaments/hide", {"name": "Gamma PETG"})
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["changed"])
+        status, body = call("/api/filaments")
+        hidden_list = json.loads(body)
+        self.assertEqual(hidden_list["count"], 2)
+        hidden = [row for row in hidden_list["filaments"] if row["hidden"]]
+        self.assertEqual([row["name"] for row in hidden], ["Gamma PETG"])
+        status, body = call("/api/filaments/unhide", {"name": "Gamma PETG"})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/filaments")
+        restored = json.loads(body)
+        self.assertEqual(restored["count"], 3)
+        self.assertTrue(all(not row["hidden"] for row in restored["filaments"]))
+        status, body = call("/api/filaments/hide", {"name": "Gamma PETG"})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/filaments/hidden/delete", {"name": "Gamma PETG"})
+        self.assertEqual(status, 200, body)
+        self.assertIn(b"unchanged", body)
+        status, body = call("/api/filaments")
+        after_delete = json.loads(body)
+        self.assertEqual(after_delete["count"], 2)
+        self.assertFalse(any(row["name"] == "Gamma PETG" for row in after_delete["filaments"]))
+        status, body = call("/api/restore", {"name": config_copy["name"], "where": "config"})
+        self.assertEqual(status, 200, body)
+        status, body = call("/api/filaments")
+        brought_back = json.loads(body)
+        self.assertEqual(brought_back["count"], 3)
+        self.assertTrue(any(row["name"] == "Gamma PETG" and not row["hidden"] for row in brought_back["filaments"]))
 
         status, body = call("/api/filaments/delete", {"name": "Alpha PLA"})
         self.assertEqual(status, 200, body)

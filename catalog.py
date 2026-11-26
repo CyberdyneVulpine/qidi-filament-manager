@@ -6,8 +6,9 @@ images keep that file under /home/qidi. Older images use /home/mks. This
 module finds whichever of those homes has the file.
 
 Adds, edits, and deletes splice the file as text so the rest of the JSON
-keeps its formatting. Each write is parsed again and discarded if any entry
-other than the one being changed would not match the file that was read.
+keeps its formatting. Hiding parks that same text in the state directory and
+splices it back on unhide. Each write is parsed again and discarded if any
+entry other than the one being changed would not match the file that was read.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ CATALOG_RELATIVE = Path("QIDI_Client/resource/filament_config/filament-0.4.json"
 CONFIG_RELATIVE = Path("printer_data/config")
 STATE_RELATIVE = Path("filament-manager/state")
 BASELINE_NAME = "original-ids.json"
+HIDDEN_NAME = "hidden.json"
 INSTALL_BACKUP_NAME = "install-backup.json"
 BACKUP_NAME = re.compile(r"^filament-0\.4\.json\.bak-[0-9]{8}_[0-9]{6}(?:-[0-9]+)?$")
 NOZZLE_PATTERN = re.compile(
@@ -335,7 +337,7 @@ def _added_here(entry, baseline):
     return filament_id not in baseline
 
 
-def public_row(name, entry, baseline, slots=None):
+def public_row(name, entry, baseline, slots=None, hidden=False):
     low, high = _nozzle_bounds(entry)
     filament_id = _text_field(entry, "filament_id")
     numbers = (slots or {}).get(filament_id, []) if filament_id else []
@@ -349,6 +351,7 @@ def public_row(name, entry, baseline, slots=None):
         "chamber": _chamber_text(entry),
         "added_here": _added_here(entry, baseline),
         "in_use": [slot_label(number) for number in numbers],
+        "hidden": hidden,
     }
 
 
@@ -357,8 +360,11 @@ def filament_rows(layout):
         _text, data = read_catalog(layout)
         baseline = ensure_baseline(layout, data)
         slots = slots_in_use(layout)
+        blocks = _parked_blocks(layout, data)
         rows = [public_row(name, entry, baseline, slots) for name, entry in data.items()]
-    return {"found": True, "count": len(rows), "filaments": rows}
+        for name, block in blocks.items():
+            rows.append(public_row(name, _entry_from_block(name, block), baseline, slots, hidden=True))
+    return {"found": True, "count": len(data), "filaments": rows}
 
 
 def object_span(text, key):
@@ -612,12 +618,116 @@ def _commit(layout, updated_text, updated):
     return beside, config_copy
 
 
-def _ids_owned_by_others(data, filament_id, allowed_name):
+def _hidden_path(layout):
+    return layout.state_dir / HIDDEN_NAME
+
+
+def _load_hidden_blocks(layout):
+    path = _hidden_path(layout)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(_read_text(path))
+    except json.JSONDecodeError as exc:
+        raise CatalogError(f"could not read hidden materials in {path.name}") from exc
+    if not isinstance(data, dict):
+        raise CatalogError(f"could not read hidden materials in {path.name}")
+    for name, block in data.items():
+        if not isinstance(name, str) or not isinstance(block, str):
+            raise CatalogError(f"could not read hidden materials in {path.name}")
+    return data
+
+
+def _write_hidden_blocks(layout, blocks):
+    payload = (json.dumps(blocks, indent=2) + "\n").encode("utf-8")
+    layout.state_dir.mkdir(parents=True, exist_ok=True)
+    _write_bytes(_hidden_path(layout), payload)
+
+
+def _hidden_snapshot(layout):
+    path = _hidden_path(layout)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise CatalogError(f"could not read hidden materials in {path.name}") from exc
+
+
+def _restore_hidden(layout, snapshot):
+    path = _hidden_path(layout)
+    if snapshot is None:
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as exc:
+            raise CatalogError(f"could not restore hidden materials: {exc}") from exc
+        return
+    layout.state_dir.mkdir(parents=True, exist_ok=True)
+    _write_bytes(path, snapshot)
+
+
+def _reconcile_hidden(layout, catalog_data, blocks):
+    """Drop parked copies whose names are back in the catalog. The catalog wins."""
+    if not any(name in catalog_data for name in blocks):
+        return blocks
+    kept = {name: block for name, block in blocks.items() if name not in catalog_data}
+    _write_hidden_blocks(layout, kept)
+    return kept
+
+
+def _parked_blocks(layout, catalog_data):
+    return _reconcile_hidden(layout, catalog_data, _load_hidden_blocks(layout))
+
+
+def _entry_from_block(name, block):
+    try:
+        parsed = json.loads("{" + block + "}")
+    except json.JSONDecodeError as exc:
+        raise CatalogError(f"hidden material {name} is not a catalog entry") from exc
+    entry = parsed.get(name) if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict) or list(parsed) != [name] or not isinstance(entry, dict):
+        raise CatalogError(f"hidden material {name} is not a catalog entry")
+    return entry
+
+
+def _hidden_entries(blocks):
+    return {name: _entry_from_block(name, block) for name, block in blocks.items()}
+
+
+def _stored_block(text, key):
+    span = object_span(text, key)
+    if span is None:
+        return None
+    start, end = span
+    block = text[start:end]
+    if block.endswith(","):
+        block = block[:-1]
+    return block
+
+
+def _insert_at_end(text, original, block):
+    if not original:
+        raise CatalogError("the catalog is empty")
+    last_key = next(reversed(original))
+    span = object_span(text, last_key)
+    if span is None:
+        raise CatalogError(f"could not locate the {last_key} block in the file text")
+    start, end = span
+    return _insert_after(text, end, text[start:end], block)
+
+
+def _ids_owned_by_others(data, filament_id, allowed_name, hidden=None):
     owners = [
         name
         for name, entry in data.items()
         if isinstance(entry, dict) and entry.get("filament_id") == filament_id and name != allowed_name
     ]
+    for name, entry in (hidden or {}).items():
+        if name == allowed_name or not isinstance(entry, dict):
+            continue
+        if entry.get("filament_id") == filament_id:
+            owners.append(f"{name} (hidden)")
     if owners:
         raise CatalogError(f"{filament_id} is already used by {', '.join(owners)}")
 
@@ -636,8 +746,18 @@ def add_filament(layout, template, name, material_type, filament_id, vendor, noz
     with _file_lock(layout):
         text, original = read_catalog(layout)
         ensure_baseline(layout, original)
-        source = _require_object(original, template, "template entry")
-        _ids_owned_by_others(original, new_id, new_key)
+        blocks = _parked_blocks(layout, original)
+        if new_key in blocks:
+            raise CatalogError(f"{new_key} is hidden. Unhide it before adding another with that name.")
+        _ids_owned_by_others(original, new_id, new_key, _hidden_entries(blocks))
+        if template in original:
+            source = _require_object(original, template, "template entry")
+            template_block = None
+        elif template in blocks:
+            source = _entry_from_block(template, blocks[template])
+            template_block = blocks[template]
+        else:
+            raise CatalogError(f"template entry not found: {template}")
         wanted = _expected_entry(source, new_type, new_id, new_vendor, nozzle, chamber)
         if new_key in original:
             if original[new_key] == wanted:
@@ -649,13 +769,21 @@ def add_filament(layout, template, name, material_type, filament_id, vendor, noz
                 )
             raise CatalogError(f"{new_key} exists but does not match this definition")
 
-        span = object_span(text, template)
-        if span is None:
-            raise CatalogError(f"could not locate the {template} block in the file text")
-        start, end = span
-        block = text[start:end]
-        cloned = _rewrite_block(block, template, source, new_key, new_type, new_id, new_vendor, nozzle, chamber)
-        updated_text = _insert_after(text, end, block, cloned)
+        if template_block is None:
+            span = object_span(text, template)
+            if span is None:
+                raise CatalogError(f"could not locate the {template} block in the file text")
+            start, end = span
+            block = text[start:end]
+            cloned = _rewrite_block(block, template, source, new_key, new_type, new_id, new_vendor, nozzle, chamber)
+            updated_text = _insert_after(text, end, block, cloned)
+        else:
+            cloned = _rewrite_block(
+                template_block, template, source, new_key, new_type, new_id, new_vendor, nozzle, chamber
+            )
+            if cloned.endswith(","):
+                cloned = cloned[:-1]
+            updated_text = _insert_at_end(text, original, cloned)
         updated = _parse_result(updated_text)
         if updated.get(new_key) != wanted:
             raise CatalogError("new entry does not match the requested definition")
@@ -687,10 +815,13 @@ def update_filament(layout, original_name, name, material_type, filament_id, ven
     with _file_lock(layout):
         text, original = read_catalog(layout)
         ensure_baseline(layout, original)
+        blocks = _parked_blocks(layout, original)
         source = _require_object(original, original_name, "entry")
         if new_key != original_name and new_key in original:
             raise CatalogError(f"{new_key} already exists")
-        _ids_owned_by_others(original, new_id, original_name)
+        if new_key != original_name and new_key in blocks:
+            raise CatalogError(f"{new_key} is hidden. Unhide it before using that name.")
+        _ids_owned_by_others(original, new_id, original_name, _hidden_entries(blocks))
         old_id = _text_field(source, "filament_id")
         if old_id and old_id != new_id:
             _require_not_in_use(slots_in_use(layout), old_id, original_name, "change its id")
@@ -746,6 +877,7 @@ def delete_filament(layout, name):
     with _file_lock(layout):
         text, original = read_catalog(layout)
         ensure_baseline(layout, original)
+        _parked_blocks(layout, original)
         entry = _require_object(original, key, "entry")
         if len(original) <= 1:
             raise CatalogError("the catalog cannot be emptied")
@@ -771,6 +903,115 @@ def delete_filament(layout, name):
             config_copy=config_copy,
             before_count=len(original),
             after_count=len(updated),
+        )
+
+
+def hide_filament(layout, name):
+    """Move one catalog entry into the state directory so the load menu skips it."""
+    key = safe_token(name, "name")
+    with _file_lock(layout):
+        text, original = read_catalog(layout)
+        ensure_baseline(layout, original)
+        blocks = _parked_blocks(layout, original)
+        entry = _require_object(original, key, "entry")
+        if len(original) <= 1:
+            raise CatalogError("the catalog cannot be emptied")
+        filament_id = _text_field(entry, "filament_id")
+        if filament_id:
+            _require_not_in_use(slots_in_use(layout), filament_id, key, "hide it")
+        block = _stored_block(text, key)
+        if block is None:
+            raise CatalogError(f"could not locate the {key} block in the file text")
+        bounds = _removal_bounds(text, key)
+        if bounds is None:
+            raise CatalogError(f"could not locate the {key} block in the file text")
+        start, end = bounds
+        updated_text = text[:start] + text[end:]
+        updated = _parse_result(updated_text)
+        if key in updated:
+            raise CatalogError("entry is still present")
+        ensure_untouched(original, updated, {key})
+        if len(updated) != len(original) - 1:
+            raise CatalogError("entry count did not decrease by one")
+        if _entry_from_block(key, block) != entry:
+            raise CatalogError("hidden material does not match the catalog entry")
+        previous = _hidden_snapshot(layout)
+        parked = dict(blocks)
+        parked[key] = block
+        _write_hidden_blocks(layout, parked)
+        try:
+            beside, config_copy = _commit(layout, updated_text, updated)
+        except Exception:
+            _restore_hidden(layout, previous)
+            raise
+        return ChangeResult(
+            changed=True,
+            message=f"Hid {key}.",
+            beside=beside,
+            config_copy=config_copy,
+            before_count=len(original),
+            after_count=len(updated),
+        )
+
+
+def unhide_filament(layout, name):
+    """Splice a parked entry back onto the end of the catalog."""
+    key = safe_token(name, "name")
+    with _file_lock(layout):
+        text, original = read_catalog(layout)
+        ensure_baseline(layout, original)
+        blocks = _load_hidden_blocks(layout)
+        if key in original:
+            if key in blocks:
+                kept = {name: block for name, block in blocks.items() if name != key}
+                _write_hidden_blocks(layout, kept)
+            raise CatalogError(f"{key} is already in the catalog")
+        blocks = _reconcile_hidden(layout, original, blocks)
+        if key not in blocks:
+            raise CatalogError(f"hidden material not found: {key}")
+        block = blocks[key]
+        entry = _entry_from_block(key, block)
+        filament_id = _text_field(entry, "filament_id")
+        if filament_id:
+            others = _hidden_entries({name: item for name, item in blocks.items() if name != key})
+            _ids_owned_by_others(original, filament_id, key, others)
+        updated_text = _insert_at_end(text, original, block)
+        updated = _parse_result(updated_text)
+        if key not in updated:
+            raise CatalogError("restored entry is missing")
+        if updated.get(key) != entry:
+            raise CatalogError("restored entry does not match the hidden material")
+        ensure_untouched(original, updated, {key})
+        if len(updated) != len(original) + 1:
+            raise CatalogError("entry count did not increase by one")
+        beside, config_copy = _commit(layout, updated_text, updated)
+        kept = {name: item for name, item in blocks.items() if name != key}
+        _write_hidden_blocks(layout, kept)
+        return ChangeResult(
+            changed=True,
+            message=f"Unhid {key}.",
+            beside=beside,
+            config_copy=config_copy,
+            before_count=len(original),
+            after_count=len(updated),
+        )
+
+
+def delete_hidden_filament(layout, name):
+    """Drop a parked entry. The live catalog is left as it is."""
+    key = safe_token(name, "name")
+    with _file_lock(layout):
+        _text, original = read_catalog(layout)
+        blocks = _parked_blocks(layout, original)
+        if key not in blocks:
+            raise CatalogError(f"hidden material not found: {key}")
+        kept = {name: block for name, block in blocks.items() if name != key}
+        _write_hidden_blocks(layout, kept)
+        return ChangeResult(
+            changed=True,
+            message=f"Deleted the hidden copy of {key}. The load menu is unchanged.",
+            before_count=len(original),
+            after_count=len(original),
         )
 
 
@@ -802,6 +1043,58 @@ def ensure_install_backup(layout):
     return name, True
 
 
+def _catalog_filaments(layout):
+    try:
+        data = json.loads(_read_text(layout.catalog))
+    except (CatalogError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {name: entry for name, entry in data.items() if isinstance(name, str) and isinstance(entry, dict)}
+
+
+def _filaments_at(paths):
+    for raw in paths:
+        try:
+            data = json.loads(_read_text(Path(raw)))
+        except (CatalogError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        return {name: entry for name, entry in data.items() if isinstance(name, str) and isinstance(entry, dict)}
+    return None
+
+
+def _filament_title(name, entry):
+    vendor = _text_field(entry, "filament_vendor")
+    if vendor and name.startswith(vendor + " "):
+        material = name[len(vendor) + 1:]
+        if material:
+            return f"{vendor} {material}"
+    if vendor:
+        return f"{vendor} {name}"
+    return name
+
+
+def _change_summary(before, after):
+    """Describe filaments gained or lost between a backup and the later catalog."""
+    if before is None or after is None:
+        return "Unreadable"
+    added = sorted(name for name in after if name not in before)
+    removed = sorted(name for name in before if name not in after)
+    if len(added) == 1 and not removed:
+        return "Added " + _filament_title(added[0], after[added[0]])
+    if len(removed) == 1 and not added:
+        return "Removed " + _filament_title(removed[0], before[removed[0]])
+    if added and not removed:
+        return f"Added {len(added)} filaments"
+    if removed and not added:
+        return f"Removed {len(removed)} filaments"
+    if added and removed:
+        return f"+{len(added)}, -{len(removed)} filaments"
+    return "No filament changes"
+
+
 def _backup_folders(layout):
     return (
         ("beside", layout.catalog.parent),
@@ -824,17 +1117,24 @@ def list_backups(layout):
                 rows[path.name] = {
                     "name": path.name,
                     "locations": [where],
+                    "paths": [str(path)],
                     "size": stat.st_size,
                     "modified": stat.st_mtime,
                     "install": path.name == protected,
                 }
                 continue
             row["locations"].append(where)
+            row["paths"].append(str(path))
             if stat.st_mtime > row["modified"]:
                 row["size"] = stat.st_size
                 row["modified"] = stat.st_mtime
     ordered = list(rows.values())
     ordered.sort(key=lambda row: (row["modified"], row["name"]), reverse=True)
+    current = _catalog_filaments(layout)
+    parsed = [_filaments_at(row["paths"]) for row in ordered]
+    for index, row in enumerate(ordered):
+        later = current if index == 0 else parsed[index - 1]
+        row["what"] = _change_summary(parsed[index], later)
     return ordered
 
 

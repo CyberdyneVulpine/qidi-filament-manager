@@ -656,6 +656,24 @@ class Handler(BaseHTTPRequestHandler):
             result = self._mutate(lambda layout: catalog.delete_filament(layout, name))
             self.send_json(200, result)
             return
+        if path == "/api/filaments/hide":
+            body = self.read_json()
+            name = _token(body, "name", "name")
+            result = self._mutate(lambda layout: catalog.hide_filament(layout, name))
+            self.send_json(200, result)
+            return
+        if path == "/api/filaments/unhide":
+            body = self.read_json()
+            name = _token(body, "name", "name")
+            result = self._mutate(lambda layout: catalog.unhide_filament(layout, name))
+            self.send_json(200, result)
+            return
+        if path == "/api/filaments/hidden/delete":
+            body = self.read_json()
+            name = _token(body, "name", "name")
+            result = self._mutate(lambda layout: catalog.delete_hidden_filament(layout, name))
+            self.send_json(200, result)
+            return
         if path == "/api/backup":
             result = self._mutate(catalog.create_backup)
             self.send_json(200, result)

@@ -336,6 +336,29 @@
     .grow { flex: 1 1 16rem; }
     .grow input { width: 100%; }
 
+    label.check {
+      flex-direction: row;
+      align-items: center;
+      align-self: end;
+      gap: 0.45rem;
+      min-height: 2.35rem;
+      color: var(--ink);
+      user-select: none;
+    }
+
+    label.check input,
+    label.check input:hover {
+      width: 1.05rem;
+      height: 1.05rem;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      accent-color: var(--accent);
+    }
+
+    tr.row-hidden td { color: var(--muted); }
+
     /* No overflow here on wide screens: any overflow value makes this the
        scroll container and stops the header row sticking to the viewport. */
     .table-wrap {
@@ -361,10 +384,29 @@
     th, td {
       text-align: left;
       padding: 0.35rem 0.75rem;
-      height: 2.5rem;
+      min-height: 2.5rem;
       border-bottom: 1px solid var(--line);
       vertical-align: middle;
       white-space: nowrap;
+    }
+
+    td.wrap { white-space: normal; }
+
+    .path-list {
+      margin: 0.4rem 0 0.15rem;
+      padding: 0;
+      list-style: none;
+    }
+
+    .path-list code {
+      display: inline;
+      white-space: normal;
+      word-break: break-all;
+    }
+
+    td.wrap summary {
+      cursor: pointer;
+      color: var(--ink);
     }
 
     tbody tr:hover td { background: var(--hover); }
@@ -517,12 +559,16 @@
         <label>Vendor
           <select id="vendor-filter"></select>
         </label>
+        <label class="check">
+          <input id="show-hidden" type="checkbox">
+          <span id="show-hidden-label">Show hidden (0)</span>
+        </label>
         <button id="backup" type="button" class="secondary">Back up now</button>
       </div>
 
       <div class="table-wrap">
         <table>
-          <caption>Added here = new since this app first ran. In use = loaded on a slot; pick another material on the touchscreen before removing it or changing its id.</caption>
+          <caption>Added here = new since this app first ran. In use = loaded on a slot; pick another material on the touchscreen before removing it, hiding it, or changing its id. Hidden = parked out of the load menu.</caption>
           <thead>
             <tr>
               <th>Vendor</th>
@@ -579,7 +625,7 @@
     </div>
 
     <footer>
-      <p>After an add, edit, removal, or restore, use Apply Changes so Klipper reloads its catalog. Selecting a material it does not know shuts Klipper down.</p>
+      <p>After an add, edit, removal, hide, unhide, or restore, use Apply Changes so Klipper reloads its catalog. Selecting a material it does not know shuts Klipper down.</p>
       <p>This page is open on the local network, with no extra login, the same way Fluidd and Moonraker are on a stock QIDI. Do not forward the port to the internet.</p>
     </footer>
   </main>
@@ -668,6 +714,8 @@
     const copyCatalogButton = document.getElementById("copy-catalog");
     const searchInput = document.getElementById("search");
     const vendorFilter = document.getElementById("vendor-filter");
+    const showHidden = document.getElementById("show-hidden");
+    const showHiddenLabel = document.getElementById("show-hidden-label");
     const rowsBody = document.getElementById("rows");
     const templateSelect = document.getElementById("template");
     const vendorList = document.getElementById("vendors");
@@ -920,7 +968,13 @@
       menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
     }
 
+    function shownRows() {
+      if (showHidden.checked) return materials;
+      return materials.filter(function (row) { return !row.hidden; });
+    }
+
     function matches(row) {
+      if (row.hidden && !showHidden.checked) return false;
       const vendor = vendorFilter.value;
       if (vendor && row.vendor !== vendor) return false;
       const query = searchInput.value.trim().toLowerCase();
@@ -934,19 +988,30 @@
     }
 
     function renderTable() {
+      const parked = materials.filter(function (row) { return row.hidden; }).length;
+      showHiddenLabel.textContent = "Show hidden (" + parked + ")";
       const visible = materials.filter(matches);
+      const liveCount = materials.length - parked;
       rowsBody.replaceChildren();
       if (!visible.length) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
         td.colSpan = 7;
-        td.textContent = materials.length ? "No materials match." : "The catalog is empty.";
+        const query = searchInput.value.trim();
+        if (!materials.length) {
+          td.textContent = "The catalog is empty.";
+        } else if (!liveCount && parked && !showHidden.checked && !query && !vendorFilter.value) {
+          td.textContent = "Every material is hidden. Show hidden to bring one back.";
+        } else {
+          td.textContent = "No materials match.";
+        }
         tr.append(td);
         rowsBody.append(tr);
         return;
       }
       for (const row of visible) {
         const tr = document.createElement("tr");
+        if (row.hidden) tr.className = "row-hidden";
         const nameCell = document.createElement("td");
         const vendorPrefix = row.vendor ? row.vendor + " " : "";
         nameCell.textContent = vendorPrefix && row.name.indexOf(vendorPrefix) === 0
@@ -956,6 +1021,13 @@
           const badge = document.createElement("span");
           badge.className = "badge";
           badge.textContent = "Added here";
+          nameCell.append(badge);
+        }
+        if (row.hidden) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "Hidden";
+          badge.title = "Out of the load menu until you unhide it";
           nameCell.append(badge);
         }
         const inUse = row.in_use || [];
@@ -987,16 +1059,37 @@
         edit.className = "small secondary";
         edit.textContent = "Edit";
         edit.addEventListener("click", function () { openEdit(row); });
+        const hide = document.createElement("button");
+        hide.type = "button";
+        hide.className = "small secondary";
         const remove = document.createElement("button");
         remove.type = "button";
         remove.className = "small secondary danger";
         remove.textContent = "Remove";
-        if (inUse.length) {
-          remove.disabled = true;
-          remove.title = "Selected on " + inUse.join(", ") + ". Choose another material for that slot on the touchscreen first.";
+        const slotTitle = "Selected on " + inUse.join(", ") + ". Choose another material for that slot on the touchscreen first.";
+        if (row.hidden) {
+          copy.disabled = true;
+          copy.title = "Unhide this material before copying it.";
+          edit.disabled = true;
+          edit.title = "Unhide this material before editing it.";
+          hide.textContent = "Unhide";
+          hide.addEventListener("click", function () { unhideRow(row); });
+          remove.addEventListener("click", function () { removeHiddenRow(row); });
+        } else {
+          hide.textContent = "Hide";
+          if (inUse.length) {
+            hide.disabled = true;
+            hide.title = slotTitle;
+            remove.disabled = true;
+            remove.title = slotTitle;
+          } else if (liveCount <= 1) {
+            hide.disabled = true;
+            hide.title = "The load menu needs at least one material.";
+          }
+          hide.addEventListener("click", function () { hideRow(row); });
+          remove.addEventListener("click", function () { removeRow(row); });
         }
-        remove.addEventListener("click", function () { removeRow(row); });
-        actions.append(copy, edit, remove);
+        actions.append(copy, edit, hide, remove);
         cells.push(actions);
         tr.append(...cells);
         rowsBody.append(tr);
@@ -1028,7 +1121,7 @@
     }
 
     function renderTemplates() {
-      const names = materials.map(function (row) { return row.name; });
+      const names = shownRows().map(function (row) { return row.name; });
       const previous = templateSelect.value;
       fillSelect(templateSelect, names, previous, "");
       if (!names.includes(previous)) fillFromTemplate();
@@ -1040,7 +1133,7 @@
 
     function renderVendors() {
       const vendors = [];
-      for (const row of materials) {
+      for (const row of shownRows()) {
         if (row.vendor && vendors.indexOf(row.vendor) === -1) vendors.push(row.vendor);
       }
       vendors.sort(function (a, b) { return a.localeCompare(b); });
@@ -1114,7 +1207,7 @@
       }
       const table = document.createElement("table");
       const head = document.createElement("tr");
-      for (const label of ["When", "Where", "Size", ""]) {
+      for (const label of ["When", "What", "Where", "Size", ""]) {
         const th = document.createElement("th");
         th.textContent = label;
         head.append(th);
@@ -1135,7 +1228,10 @@
           when.append(badge);
         }
         tr.append(when);
-        tr.append(textCell(backupWhereLabel(locations)));
+        const what = textCell(item.what || "");
+        what.className = "wrap";
+        tr.append(what);
+        tr.append(locationCell(item.paths || []));
         tr.append(textCell(item.size < 1024 ? item.size + " B" : (item.size / 1024).toFixed(1) + " KB"));
         const actions = document.createElement("td");
         actions.className = "actions";
@@ -1173,13 +1269,26 @@
       backupList.append(table);
     }
 
-    function backupWhereLabel(locations) {
-      const beside = locations.includes("beside");
-      const config = locations.includes("config");
-      if (beside && config) return "Beside the catalog, and in printer_data/config";
-      if (beside) return "Beside the catalog";
-      if (config) return "printer_data/config";
-      return "";
+    function locationCell(paths) {
+      const td = document.createElement("td");
+      td.className = "wrap";
+      const count = paths.length;
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = count === 1 ? "1 location" : count + " locations";
+      details.append(summary);
+      const list = document.createElement("ul");
+      list.className = "path-list";
+      for (const path of paths) {
+        const item = document.createElement("li");
+        const code = document.createElement("code");
+        code.textContent = path;
+        item.append(code);
+        list.append(item);
+      }
+      details.append(list);
+      td.append(details);
+      return td;
     }
 
     async function reload() {
@@ -1258,6 +1367,58 @@
       busy = true;
       try {
         const result = await api("/api/filaments/delete", { name: row.name });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    async function hideRow(row) {
+      if (busy) return;
+      busy = true;
+      try {
+        const result = await api("/api/filaments/hide", { name: row.name });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    async function unhideRow(row) {
+      if (busy) return;
+      busy = true;
+      try {
+        const result = await api("/api/filaments/unhide", { name: row.name });
+        showNotice(result.message);
+        await reload();
+      } catch (err) {
+        showError(err.message);
+      } finally {
+        busy = false;
+        if (lastStatus) applyStatus(lastStatus);
+      }
+    }
+
+    async function removeHiddenRow(row) {
+      if (busy) return;
+      const label = row.type && row.type !== row.name ? row.name + " (" + row.type + ")" : row.name;
+      const confirmed = await ask(
+        "Delete this hidden material?",
+        "Delete the hidden copy of " + label + "? The load menu is unchanged.",
+        "Delete"
+      );
+      if (!confirmed) return;
+      busy = true;
+      try {
+        const result = await api("/api/filaments/hidden/delete", { name: row.name });
         showNotice(result.message);
         await reload();
       } catch (err) {
@@ -1373,6 +1534,11 @@
     templateSelect.addEventListener("change", fillFromTemplate);
     searchInput.addEventListener("input", renderTable);
     vendorFilter.addEventListener("change", renderTable);
+    showHidden.addEventListener("change", function () {
+      renderVendors();
+      renderTemplates();
+      renderTable();
+    });
 
     document.getElementById("backup").addEventListener("click", async function () {
       if (busy) return;
