@@ -1100,6 +1100,8 @@ def delete_hidden_filament(layout, name):
         blocks = _parked_blocks(layout, original)
         if key not in blocks:
             raise CatalogError(f"hidden material not found: {key}")
+        filament_id = _text_field(_entry_from_block(key, blocks[key]), "filament_id")
+        _require_not_firmware_default(filament_id, key, "delete it. Unhide it instead")
         kept = {name: block for name, block in blocks.items() if name != key}
         _write_hidden_blocks(layout, kept)
         return ChangeResult(

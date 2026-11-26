@@ -450,6 +450,16 @@
       vertical-align: 0.1em;
     }
 
+    .badge.in-use {
+      background: rgba(76, 175, 80, 0.16);
+      color: var(--ok);
+    }
+
+    .badge.required {
+      background: rgba(255, 82, 82, 0.16);
+      color: var(--danger);
+    }
+
     .card {
       background: var(--card);
       border: 1px solid var(--line);
@@ -1044,14 +1054,14 @@
         const inUse = row.in_use || [];
         if (inUse.length) {
           const badge = document.createElement("span");
-          badge.className = "badge";
+          badge.className = "badge in-use";
           badge.textContent = "In use";
           badge.title = "Selected on " + inUse.join(", ");
           nameCell.append(badge);
         }
         if (row.required) {
           const badge = document.createElement("span");
-          badge.className = "badge";
+          badge.className = "badge required";
           badge.textContent = "Required";
           badge.title = "A default material in Klipper's filament code. Loading filament can shut Klipper down without it.";
           nameCell.append(badge);
@@ -1107,7 +1117,13 @@
           hide.addEventListener("click", function () { hideRow(row); });
           remove.addEventListener("click", function () { removeRow(row); });
         }
-        actions.append(copy, edit, hide, remove);
+        if (!row.required) {
+          actions.append(copy, edit, hide, remove);
+        } else if (row.hidden) {
+          actions.append(copy, edit, hide);
+        } else {
+          actions.append(copy, edit);
+        }
         cells.push(actions);
         tr.append(...cells);
         rowsBody.append(tr);

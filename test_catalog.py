@@ -474,6 +474,18 @@ class CatalogTests(unittest.TestCase):
         with self.assertRaises(catalog.CatalogError) as rapido:
             catalog.hide_filament(layout, "QIDI PLA Rapido")
         self.assertIn("QFA02", str(rapido.exception))
+        parked = catalog.discover([
+            self.make_home("mks", SAMPLE.replace('"filament_id": "QFA00"', '"filament_id": "QFX00"'))
+        ])
+        catalog.hide_filament(parked, "QIDI PLA Basic")
+        parked_text = (parked.state_dir / catalog.HIDDEN_NAME).read_text(encoding="utf-8")
+        catalog._write_hidden_blocks(parked, {
+            name: block.replace("QFX00", "QFA00") for name, block in json.loads(parked_text).items()
+        })
+        with self.assertRaises(catalog.CatalogError) as dropped:
+            catalog.delete_hidden_filament(parked, "QIDI PLA Basic")
+        self.assertIn("Unhide it instead", str(dropped.exception))
+        self.assertIn("QIDI PLA Basic", self.hidden_blocks(parked))
         for attempt, action in (
             (lambda: catalog.hide_filament(layout, "QIDI PLA Basic"), "hide it"),
             (lambda: catalog.delete_filament(layout, "QIDI PLA Basic"), "remove it"),
