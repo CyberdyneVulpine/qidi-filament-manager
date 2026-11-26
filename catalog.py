@@ -45,6 +45,9 @@ NOZZLE_PATTERN = re.compile(
 SAVED_VARIABLES_NAME = "saved_variables.cfg"
 SLOT_PATTERN = re.compile(r"^filament_slot(\d+)\s*=\s*(.+?)\s*$")
 EXTERNAL_SLOT = 16
+# multi_color_controller's DEFAULT_RFID_FILAMENT_ID. LOAD_FILAMENT_CONTROL looks
+# it up next to the slot's id, so Klipper shuts down when it is not in the catalog.
+FIRMWARE_DEFAULT_ID = "QFA00"
 
 
 class CatalogError(Exception):
@@ -286,6 +289,24 @@ def _require_not_in_use(slots, filament_id, name, action):
     )
 
 
+def _require_not_firmware_default(filament_id, name, action):
+    if filament_id != FIRMWARE_DEFAULT_ID:
+        return
+    raise CatalogError(
+        f"{name} ({filament_id}) is the default material in Klipper's filament code. "
+        f"Loading filament shuts Klipper down when that id is not in the catalog, so you cannot {action}."
+    )
+
+
+def _require_firmware_default(data, label):
+    if FIRMWARE_DEFAULT_ID in _ids_in(data):
+        return
+    raise CatalogError(
+        f"{label} has no entry for {FIRMWARE_DEFAULT_ID}, the default material in Klipper's filament code. "
+        "Loading filament shuts Klipper down without it. Unhide or restore that entry first."
+    )
+
+
 def ensure_baseline(layout, data):
     """Record ids from the first run. Later ids are the ones added here."""
     path = _baseline_path(layout)
@@ -354,6 +375,7 @@ def public_row(name, entry, baseline, slots=None, hidden=False):
         "chamber": _chamber_text(entry),
         "added_here": _added_here(entry, baseline),
         "in_use": [slot_label(number) for number in numbers],
+        "required": filament_id == FIRMWARE_DEFAULT_ID,
         "hidden": hidden,
     }
 
@@ -694,6 +716,7 @@ def apply_staged(layout):
             )
         text = _read_text(path)
         updated = _parse_result(text)
+        _require_firmware_default(updated, "The staged catalog")
         _text, live = read_catalog(layout)
         if updated == live:
             path.unlink()
@@ -916,6 +939,7 @@ def update_filament(layout, original_name, name, material_type, filament_id, ven
         _ids_owned_by_others(original, new_id, original_name, _hidden_entries(blocks))
         old_id = _text_field(source, "filament_id")
         if old_id and old_id != new_id:
+            _require_not_firmware_default(old_id, original_name, "change its id")
             _require_not_in_use(slots_in_use(layout), old_id, original_name, "change its id")
         wanted = _expected_entry(source, new_type, new_id, new_vendor, nozzle, chamber)
         if new_key == original_name and original[original_name] == wanted:
@@ -967,6 +991,7 @@ def delete_filament(layout, name):
             raise CatalogError("the catalog cannot be emptied")
         filament_id = _text_field(entry, "filament_id")
         if filament_id:
+            _require_not_firmware_default(filament_id, key, "remove it")
             _require_not_in_use(slots_in_use(layout), filament_id, key, "remove it")
         bounds = _removal_bounds(text, key)
         if bounds is None:
@@ -994,6 +1019,7 @@ def hide_filament(layout, name):
             raise CatalogError("the catalog cannot be emptied")
         filament_id = _text_field(entry, "filament_id")
         if filament_id:
+            _require_not_firmware_default(filament_id, key, "hide it")
             _require_not_in_use(slots_in_use(layout), filament_id, key, "hide it")
         block = _stored_block(text, key)
         if block is None:
@@ -1333,6 +1359,7 @@ def restore_backup(layout, name, where):
             raise CatalogError("backup does not contain a catalog")
         if any(not isinstance(value, dict) for value in data.values()):
             raise CatalogError("backup entries are not catalog objects")
+        _require_firmware_default(data, "This backup")
         kept = _ids_in(data)
         for filament_id, numbers in sorted(slots_in_use(layout).items()):
             if filament_id not in kept:

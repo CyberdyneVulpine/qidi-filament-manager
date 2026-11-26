@@ -573,6 +573,7 @@
           <caption>
             <span>Custom = new since this app first ran.</span>
             <span>In use = loaded on a slot; pick another material on the touchscreen before removing it, hiding it, or changing its id.</span>
+            <span>Required = Klipper's default material; it cannot be removed, hidden, or given a new id.</span>
             <span>Hidden = not shown on the touchscreen but kept in another file.</span>
           </caption>
           <thead>
@@ -1046,6 +1047,13 @@
           badge.className = "badge";
           badge.textContent = "In use";
           badge.title = "Selected on " + inUse.join(", ");
+          nameCell.append(badge);
+        }
+        if (row.required) {
+          const badge = document.createElement("span");
+          badge.className = "badge";
+          badge.textContent = "Required";
+          badge.title = "Klipper's default material. Loading filament shuts Klipper down without it.";
           nameCell.append(badge);
         }
         const cells = [
