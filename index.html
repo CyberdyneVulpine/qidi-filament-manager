@@ -381,6 +381,8 @@
       font-size: 0.85rem;
     }
 
+    caption span { display: block; }
+
     th, td {
       text-align: left;
       padding: 0.35rem 0.75rem;
@@ -568,7 +570,11 @@
 
       <div class="table-wrap">
         <table>
-          <caption>Added here = new since this app first ran. In use = loaded on a slot; pick another material on the touchscreen before removing it, hiding it, or changing its id. Hidden = parked out of the load menu.</caption>
+          <caption>
+            <span>Custom = new since this app first ran.</span>
+            <span>In use = loaded on a slot; pick another material on the touchscreen before removing it, hiding it, or changing its id.</span>
+            <span>Hidden = not shown on the touchscreen but kept in another file.</span>
+          </caption>
           <thead>
             <tr>
               <th>Vendor</th>
@@ -625,7 +631,7 @@
     </div>
 
     <footer>
-      <p>After an add, edit, removal, hide, unhide, or restore, use Apply Changes so Klipper reloads its catalog. Selecting a material it does not know shuts Klipper down.</p>
+      <p>Adds, edits, removals, hides, and restores stay staged until Apply Changes. That saves one backup, updates the load menu, and reloads Klipper. Selecting a material it does not know shuts Klipper down.</p>
       <p>This page is open on the local network, with no extra login, the same way Fluidd and Moonraker are on a stock QIDI. Do not forward the port to the internet.</p>
     </footer>
   </main>
@@ -904,6 +910,9 @@
       } else if (status.client_unit && status.client_active === false) {
         banner.hidden = false;
         banner.textContent = "The touchscreen client is not running. Klipper is left alone.";
+      } else if (status.staged) {
+        banner.hidden = false;
+        banner.textContent = "Changes are staged. Apply Changes saves one backup and updates the load menu.";
       } else {
         banner.hidden = true;
         banner.textContent = "";
@@ -1020,7 +1029,7 @@
         if (row.added_here) {
           const badge = document.createElement("span");
           badge.className = "badge";
-          badge.textContent = "Added here";
+          badge.textContent = "Custom";
           nameCell.append(badge);
         }
         if (row.hidden) {
@@ -1201,7 +1210,7 @@
       if (!backups.length) {
         const p = document.createElement("p");
         p.className = "hint";
-        p.textContent = "No backups yet. Every change saves one, and Back up now saves one without editing.";
+        p.textContent = "No backups yet. Apply Changes saves one for the staged edits, and Back up now saves one without editing.";
         backupList.append(p);
         return;
       }
@@ -1306,9 +1315,10 @@
 
     async function refreshStatus() {
       const previous = lastStatus && lastStatus.count;
+      const previousStaged = lastStatus && lastStatus.staged;
       const status = await api("/api/status");
       applyStatus(status);
-      if (status.found && previous != null && status.count !== previous) {
+      if (status.found && previous != null && (status.count !== previous || status.staged !== previousStaged)) {
         const listed = await api("/api/filaments");
         const saved = await api("/api/backups");
         materials = listed.filaments || [];

@@ -36,6 +36,9 @@ BASELINE_NAME = "original-ids.json"
 HIDDEN_NAME = "hidden.json"
 INSTALL_BACKUP_NAME = "install-backup.json"
 BACKUP_NAME = re.compile(r"^filament-0\.4\.json\.bak-[0-9]{8}_[0-9]{6}(?:-[0-9]+)?$")
+STAGED_NAME = "staged-catalog.json"
+BACKUP_NOTES_NAME = "backup-notes.json"
+APPLY_NOTE = " Apply Changes saves one backup and updates the load menu."
 NOZZLE_PATTERN = re.compile(
     r'("nozzle_temperature": \[\s*)(-?\d+(?:\.\d+)?)(\s*,\s*)(-?\d+(?:\.\d+)?)(\s*\])'
 )
@@ -357,7 +360,7 @@ def public_row(name, entry, baseline, slots=None, hidden=False):
 
 def filament_rows(layout):
     with _file_lock(layout):
-        _text, data = read_catalog(layout)
+        _text, data = read_working(layout)
         baseline = ensure_baseline(layout, data)
         slots = slots_in_use(layout)
         blocks = _parked_blocks(layout, data)
@@ -618,6 +621,101 @@ def _commit(layout, updated_text, updated):
     return beside, config_copy
 
 
+def _staged_path(layout):
+    return layout.state_dir / STAGED_NAME
+
+
+def read_working(layout):
+    """The catalog the page is editing. Staged edits sit ahead of the printer file."""
+    path = _staged_path(layout)
+    if path.is_file():
+        text = _read_text(path)
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise CatalogError(f"staged catalog is not valid JSON ({exc})") from exc
+        if not isinstance(data, dict):
+            raise CatalogError("staged catalog is not a JSON object")
+        return text, data
+    return read_catalog(layout)
+
+
+def has_staged_changes(layout):
+    return _staged_path(layout).is_file()
+
+
+def working_overview(layout):
+    with _file_lock(layout):
+        _text, data = read_working(layout)
+        return {"count": len(data), "staged": has_staged_changes(layout)}
+
+
+def stage_catalog(layout, updated_text, updated):
+    """Keep an edit until Apply. The printer catalog is not backed up or replaced."""
+    _text, live = read_catalog(layout)
+    path = _staged_path(layout)
+    if updated == live:
+        if path.is_file():
+            path.unlink()
+        return False
+    layout.state_dir.mkdir(parents=True, exist_ok=True)
+    _write_bytes(path, updated_text.encode("utf-8"))
+    return True
+
+
+def _stage_result(layout, updated_text, updated, message, before_count):
+    pending = stage_catalog(layout, updated_text, updated)
+    if not pending:
+        return ChangeResult(
+            changed=False,
+            message="The catalog is unchanged.",
+            before_count=before_count,
+            after_count=len(updated),
+        )
+    return ChangeResult(
+        changed=True,
+        message=message + APPLY_NOTE,
+        before_count=before_count,
+        after_count=len(updated),
+    )
+
+
+def apply_staged(layout):
+    """Back up the printer catalog once and replace it with the staged edits."""
+    path = _staged_path(layout)
+    with _file_lock(layout):
+        if not path.is_file():
+            _text, data = read_catalog(layout)
+            return ChangeResult(
+                changed=False,
+                message="No staged changes.",
+                before_count=len(data),
+                after_count=len(data),
+            )
+        text = _read_text(path)
+        updated = _parse_result(text)
+        _text, live = read_catalog(layout)
+        if updated == live:
+            path.unlink()
+            return ChangeResult(
+                changed=False,
+                message="No staged changes.",
+                before_count=len(live),
+                after_count=len(live),
+            )
+        beside, config_copy = _commit(layout, text, updated)
+        path.unlink()
+        _note_hidden_backup(layout, beside.name, live, updated)
+        return ChangeResult(
+            changed=True,
+            message="Saved one backup and updated the catalog.",
+            beside=beside,
+            config_copy=config_copy,
+            before_count=len(live),
+            after_count=len(updated),
+        )
+
+
 def _hidden_path(layout):
     return layout.state_dir / HIDDEN_NAME
 
@@ -744,7 +842,7 @@ def add_filament(layout, template, name, material_type, filament_id, vendor, noz
     nozzle = normalize_nozzle(nozzle)
 
     with _file_lock(layout):
-        text, original = read_catalog(layout)
+        text, original = read_working(layout)
         ensure_baseline(layout, original)
         blocks = _parked_blocks(layout, original)
         if new_key in blocks:
@@ -790,14 +888,8 @@ def add_filament(layout, template, name, material_type, filament_id, vendor, noz
         ensure_untouched(original, updated, {new_key})
         if len(updated) != len(original) + 1:
             raise CatalogError("entry count did not increase by one")
-        beside, config_copy = _commit(layout, updated_text, updated)
-        return ChangeResult(
-            changed=True,
-            message=f"Added {new_key} ({new_id}).",
-            beside=beside,
-            config_copy=config_copy,
-            before_count=len(original),
-            after_count=len(updated),
+        return _stage_result(
+            layout, updated_text, updated, f"Added {new_key} ({new_id}).", len(original)
         )
 
 
@@ -813,7 +905,7 @@ def update_filament(layout, original_name, name, material_type, filament_id, ven
     nozzle = normalize_nozzle(nozzle)
 
     with _file_lock(layout):
-        text, original = read_catalog(layout)
+        text, original = read_working(layout)
         ensure_baseline(layout, original)
         blocks = _parked_blocks(layout, original)
         source = _require_object(original, original_name, "entry")
@@ -857,25 +949,17 @@ def update_filament(layout, original_name, name, material_type, filament_id, ven
         ensure_untouched(original, updated, {original_name, new_key})
         if len(updated) != len(original):
             raise CatalogError("entry count changed unexpectedly")
-        beside, config_copy = _commit(layout, updated_text, updated)
         if original_name == new_key:
             message = f"Updated {new_key}."
         else:
             message = f"Renamed {original_name} to {new_key}."
-        return ChangeResult(
-            changed=True,
-            message=message,
-            beside=beside,
-            config_copy=config_copy,
-            before_count=len(original),
-            after_count=len(updated),
-        )
+        return _stage_result(layout, updated_text, updated, message, len(original))
 
 
 def delete_filament(layout, name):
     key = safe_token(name, "name")
     with _file_lock(layout):
-        text, original = read_catalog(layout)
+        text, original = read_working(layout)
         ensure_baseline(layout, original)
         _parked_blocks(layout, original)
         entry = _require_object(original, key, "entry")
@@ -895,22 +979,14 @@ def delete_filament(layout, name):
         ensure_untouched(original, updated, {key})
         if len(updated) != len(original) - 1:
             raise CatalogError("entry count did not decrease by one")
-        beside, config_copy = _commit(layout, updated_text, updated)
-        return ChangeResult(
-            changed=True,
-            message=f"Removed {key}.",
-            beside=beside,
-            config_copy=config_copy,
-            before_count=len(original),
-            after_count=len(updated),
-        )
+        return _stage_result(layout, updated_text, updated, f"Removed {key}.", len(original))
 
 
 def hide_filament(layout, name):
     """Move one catalog entry into the state directory so the load menu skips it."""
     key = safe_token(name, "name")
     with _file_lock(layout):
-        text, original = read_catalog(layout)
+        text, original = read_working(layout)
         ensure_baseline(layout, original)
         blocks = _parked_blocks(layout, original)
         entry = _require_object(original, key, "entry")
@@ -940,25 +1016,17 @@ def hide_filament(layout, name):
         parked[key] = block
         _write_hidden_blocks(layout, parked)
         try:
-            beside, config_copy = _commit(layout, updated_text, updated)
+            return _stage_result(layout, updated_text, updated, f"Hid {key}.", len(original))
         except Exception:
             _restore_hidden(layout, previous)
             raise
-        return ChangeResult(
-            changed=True,
-            message=f"Hid {key}.",
-            beside=beside,
-            config_copy=config_copy,
-            before_count=len(original),
-            after_count=len(updated),
-        )
 
 
 def unhide_filament(layout, name):
     """Splice a parked entry back onto the end of the catalog."""
     key = safe_token(name, "name")
     with _file_lock(layout):
-        text, original = read_catalog(layout)
+        text, original = read_working(layout)
         ensure_baseline(layout, original)
         blocks = _load_hidden_blocks(layout)
         if key in original:
@@ -984,24 +1052,17 @@ def unhide_filament(layout, name):
         ensure_untouched(original, updated, {key})
         if len(updated) != len(original) + 1:
             raise CatalogError("entry count did not increase by one")
-        beside, config_copy = _commit(layout, updated_text, updated)
+        result = _stage_result(layout, updated_text, updated, f"Unhid {key}.", len(original))
         kept = {name: item for name, item in blocks.items() if name != key}
         _write_hidden_blocks(layout, kept)
-        return ChangeResult(
-            changed=True,
-            message=f"Unhid {key}.",
-            beside=beside,
-            config_copy=config_copy,
-            before_count=len(original),
-            after_count=len(updated),
-        )
+        return result
 
 
 def delete_hidden_filament(layout, name):
     """Drop a parked entry. The live catalog is left as it is."""
     key = safe_token(name, "name")
     with _file_lock(layout):
-        _text, original = read_catalog(layout)
+        _text, original = read_working(layout)
         blocks = _parked_blocks(layout, original)
         if key not in blocks:
             raise CatalogError(f"hidden material not found: {key}")
@@ -1076,23 +1137,87 @@ def _filament_title(name, entry):
     return name
 
 
-def _change_summary(before, after):
-    """Describe filaments gained or lost between a backup and the later catalog."""
+def _loss_phrase(names, source, verb):
+    if len(names) == 1:
+        return verb + " " + _filament_title(names[0], source[names[0]])
+    return f"{verb} {len(names)} filaments"
+
+
+def _change_summary(before, after, hidden_names=None):
+    """Describe filaments gained or lost between a backup and the later catalog.
+
+    Names in hidden_names were hidden, not deleted, so they use Hid instead of Removed.
+    """
     if before is None or after is None:
         return "Unreadable"
+    hidden_names = set(hidden_names or ())
     added = sorted(name for name in after if name not in before)
     removed = sorted(name for name in before if name not in after)
+    hid = [name for name in removed if name in hidden_names]
+    deleted = [name for name in removed if name not in hidden_names]
     if len(added) == 1 and not removed:
         return "Added " + _filament_title(added[0], after[added[0]])
-    if len(removed) == 1 and not added:
-        return "Removed " + _filament_title(removed[0], before[removed[0]])
     if added and not removed:
         return f"Added {len(added)} filaments"
-    if removed and not added:
-        return f"Removed {len(removed)} filaments"
+    if not added and removed:
+        parts = []
+        if hid:
+            parts.append(_loss_phrase(hid, before, "Hid"))
+        if deleted:
+            parts.append(_loss_phrase(deleted, before, "Removed"))
+        return ", ".join(parts)
+    if added and hid and not deleted:
+        if len(hid) == 1:
+            return f"+{len(added)}, hid {_filament_title(hid[0], before[hid[0]])}"
+        return f"+{len(added)}, hid {len(hid)} filaments"
     if added and removed:
         return f"+{len(added)}, -{len(removed)} filaments"
     return "No filament changes"
+
+
+def _notes_path(layout):
+    return layout.state_dir / BACKUP_NOTES_NAME
+
+
+def _load_backup_notes(layout):
+    path = _notes_path(layout)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(_read_text(path))
+    except (CatalogError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    notes = {}
+    for name, hidden in data.items():
+        if (
+            isinstance(name, str)
+            and isinstance(hidden, list)
+            and all(isinstance(item, str) for item in hidden)
+        ):
+            notes[name] = set(hidden)
+    return notes
+
+
+def _save_backup_notes(layout, notes):
+    payload = {name: sorted(hidden) for name, hidden in notes.items() if hidden}
+    layout.state_dir.mkdir(parents=True, exist_ok=True)
+    _write_bytes(_notes_path(layout), (json.dumps(payload, indent=2) + "\n").encode("utf-8"))
+
+
+def _note_hidden_backup(layout, backup_name, before, after):
+    """Remember which names this backup's following edit hid."""
+    try:
+        hidden = set(_load_hidden_blocks(layout))
+    except CatalogError:
+        return
+    hid = sorted(name for name in before if name not in after and name in hidden)
+    if not hid:
+        return
+    notes = _load_backup_notes(layout)
+    notes[backup_name] = set(hid)
+    _save_backup_notes(layout, notes)
 
 
 def _backup_folders(layout):
@@ -1131,10 +1256,11 @@ def list_backups(layout):
     ordered = list(rows.values())
     ordered.sort(key=lambda row: (row["modified"], row["name"]), reverse=True)
     current = _catalog_filaments(layout)
+    notes = _load_backup_notes(layout)
     parsed = [_filaments_at(row["paths"]) for row in ordered]
     for index, row in enumerate(ordered):
         later = current if index == 0 else parsed[index - 1]
-        row["what"] = _change_summary(parsed[index], later)
+        row["what"] = _change_summary(parsed[index], later, notes.get(row["name"]))
     return ordered
 
 
@@ -1157,6 +1283,10 @@ def delete_backup(layout, name):
             removed += 1
         if not removed:
             raise CatalogError("backup not found")
+        notes = _load_backup_notes(layout)
+        if name in notes:
+            del notes[name]
+            _save_backup_notes(layout, notes)
     return ChangeResult(
         changed=True,
         message=f"Deleted {name}." if removed == 1 else f"Deleted both copies of {name}.",
@@ -1212,24 +1342,16 @@ def restore_backup(layout, name, where):
                     "Klipper shuts down when it loads a slot whose id is not in the catalog. "
                     "Choose a material that is also in the backup for that slot on the touchscreen, then restore."
                 )
-        current = layout.catalog.read_bytes()
-        if current == raw:
+        _live_text, live = read_catalog(layout)
+        if data == live:
+            staged = _staged_path(layout)
+            if staged.is_file():
+                staged.unlink()
             return ChangeResult(
                 changed=False,
                 message="The catalog already matches this backup.",
                 before_count=len(data),
                 after_count=len(data),
             )
-        try:
-            before = len(json.loads(current.decode("utf-8")))
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-            before = 0
-        beside, config_copy = _commit(layout, text, data)
-        return ChangeResult(
-            changed=True,
-            message=f"Restored {name}. The previous catalog was backed up first.",
-            beside=beside,
-            config_copy=config_copy,
-            before_count=before,
-            after_count=len(data),
-        )
+        _working_text, working = read_working(layout)
+        return _stage_result(layout, text, data, f"Restored {name}.", len(working))

@@ -381,7 +381,7 @@ def apply_changes(
     print_url=MOONRAKER_URL,
     wait=wait_for_klipper,
 ):
-    """Restart Klipper so it rereads the catalog, then restart the touchscreen."""
+    """Save one backup of any staged edits, then restart Klipper and the touchscreen."""
     klippy_state, _message = read_klippy_state(info_url)
     print_state = None
     print_error = None
@@ -400,6 +400,7 @@ def apply_changes(
             "The touchscreen restart was not permitted, so Klipper was left alone. "
             "install.sh adds a sudoers rule for /bin/systemctl restart qidi-client.service."
         )
+    staged = catalog.apply_staged(layout)
     _post(restart_url)
     state, message = wait(info_url)
     if state != "ready":
@@ -407,12 +408,13 @@ def apply_changes(
         raise ActionError(f"Klipper restarted but is {state}, so the touchscreen was left alone.{detail}")
     record_applied(layout.state_dir, boot_id(), time.time())
     if not restart_client:
-        return {"ok": True, "message": "Klipper reloaded the catalog. This printer has no qidi-client.service to restart."}
-    _run_client_restart()
-    return {
-        "ok": True,
-        "message": "Klipper reloaded the catalog and the touchscreen restarted. New and renamed materials are safe to select.",
-    }
+        message = "Klipper reloaded the catalog. This printer has no qidi-client.service to restart."
+    else:
+        _run_client_restart()
+        message = "Klipper reloaded the catalog and the touchscreen restarted. New and renamed materials are safe to select."
+    if staged.changed:
+        message = staged.message + " " + message
+    return {"ok": True, "message": message}
 
 
 def _run_reboot():
@@ -488,9 +490,12 @@ def build_status(layout, homes):
     else:
         apply_reason = apply_block(print_state, print_error, klippy_state)
     try:
-        count = len(json.loads(layout.catalog.read_bytes().decode("utf-8")))
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+        overview = catalog.working_overview(layout)
+        count = overview["count"]
+        staged_changes = overview["staged"]
+    except (catalog.CatalogError, OSError, UnicodeError, json.JSONDecodeError, TypeError):
         count = None
+        staged_changes = False
     return {
         "found": True,
         "catalog": str(layout.catalog),
@@ -498,6 +503,7 @@ def build_status(layout, homes):
         "home": str(layout.home),
         "owner": layout.owner,
         "count": count,
+        "staged": staged_changes,
         "stale": stale,
         "klipper_stale": klipper_stale,
         "klippy_state": klippy_state,
